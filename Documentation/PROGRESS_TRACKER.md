@@ -55,7 +55,7 @@ Last updated: 2026-10-16
 
 ## Current blockers
 - ~~**B-1:** Local infrastructure install approval~~ → **RESOLVED** (approved + installed + verified 2026-10-16)
-- **B-2:** First git commit — awaiting separate authorization (ADR-012)
+- ~~**B-2:** First git commit~~ → **RESOLVED** (root commit `6e903df`, 55 files, 2026-10-16, founder-approved). **Push to origin still awaiting approval**
 - ~~Pending confirmation: **D-15**~~ → **RESOLVED** (founder confirmed SeaweedFS 2026-10-16)
 - Future (scheduled): LLM key+cap (P3); email credentials (P4); telephony decision+number (P5); cloud account (P7); legal/consent policy (P5); segment decision (pilot); pgvector availability (P3)
 
@@ -73,7 +73,7 @@ See `DECISIONS_PENDING.md` (relevant now: first-commit authorization; D-04…D-1
 **Continue P2 Foundation** (scaffold done):
 1. **Auth module**: JWT access/refresh (separate secrets per ENVIRONMENT_VARIABLES), password hashing, login/refresh/logout endpoints, rate limiting — first migration (tenants/users) via a migration tool choice
 2. Then: tenancy → RBAC → case/message schema → audit log → outbox/queue → observability — closing with **cross-tenant negative tests passing** (Gates A/B)
-3. First git commit only with separate authorization (B-2) — suggested: commit the reviewed scaffold + docs as batch 1
+- ~~First git commit only with separate authorization (B-2)~~ → **DONE 2026-10-16**: root commit `6e903df` (docs + infra runbook + scaffold), working tree clean; push pending approval
 
 ## Resume commands
 ```powershell

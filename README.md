@@ -26,7 +26,7 @@ Multi-tenant, AI-first customer support SaaS — website chat, email, and inboun
 ## Ground rules (non-negotiable)
 
 - **No secrets in the repo.** `.env` is ignored; `.env.example` has placeholders only.
-- **No commits, pushes, or remotes without the founder's explicit authorization** (ADR-012).
+- **No pushes to any remote without the founder's explicit approval.** Routine local commits are pre-authorized (secrets audit + green tests first); remote + first commit were authorized 2026-10-16 (ADR-012 amendment).
 - **No paid API calls** — AI/email/voice run in mock mode until spending caps and providers are approved (D-04/05/06/10).
 - Tenant isolation and cross-tenant negative tests are release gates (SECURITY.md).
 - Mocks are labeled `mock-*` and never presented as real integrations.

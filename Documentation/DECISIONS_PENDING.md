@@ -13,7 +13,7 @@ Status values: **DECIDED** (confirmed + recorded in an ADR) · **OPEN** (not yet
 | **D-04** | LLM + embedding provider | Adapter first; benchmark OpenAI vs Anthropic on eval set; **mock providers only until spending cap approved** | ⏳ OPEN (P3) | planned ADR-004 |
 | **D-05** | Email provider | Mailpit mock + adapter until provider decision | ⏳ OPEN (P4) | planned ADR-007 |
 | **D-06** | Telephony provider + launch geography | Mock voice adapter first; evaluate Twilio/Vonage/Telnyx + India options (Exotel/Knowlarity) after geography decision | ⏳ OPEN (P5) | planned ADR-006 |
-| **D-07** | Initialize Git + `.gitignore` | **Yes — repo initialized 2026-10-16**; ignore rules verified (`.env` ignored, `.env.example` tracked); **no commits/pushes/remotes without separate authorization** | ✅ **DECIDED** 2026-10-16 | [ADR-012](adr/ADR-012-version-control-foundation.md) |
+| **D-07** | Initialize Git + `.gitignore` | **Yes — repo initialized 2026-10-16**; ignore rules verified (`.env` ignored, `.env.example` tracked); `origin` remote added 2026-10-16 per founder instruction; **first commit `6e903df` made 2026-10-16 under founder approval** ("commit approved"); no push yet — pushes/further batches per ADR-012 | ✅ **DECIDED** 2026-10-16 | [ADR-012](adr/ADR-012-version-control-foundation.md) |
 | **D-08** | Cloud provider | AWS preferred candidate; evaluate vs cost at P7; no provisioning now | ⏳ OPEN (P7) | — |
 | **D-09** | Target customer segment + launch market | **Undecided** — buyer interviews first (founder) | ⏳ OPEN | — |
 | **D-10** | Retention / voice recording / consent policy | Explicit policy required before enabling recording | ⏳ OPEN (before voice launch) | — |
@@ -26,12 +26,12 @@ Status values: **DECIDED** (confirmed + recorded in an ADR) · **OPEN** (not yet
 ## Standing constraints (approved)
 
 - **AI spending: mock providers only** — no paid LLM/embedding/email/telephony API calls without a separately approved spending cap (this is a development constraint, not a resolution of D-04).
-- **No commits/pushes/remotes** without separate authorization (ADR-012).
+- **Git commit policy (amended 2026-10-16, founder: *"jo tumhe sahi lage"* → policy (b)):** routine local commits are **pre-authorized** — each commit still passes a secrets audit + green tests before committing; **every push to a remote requires explicit founder approval** (ADR-012 amendment). The remote and first commit were separately authorized 2026-10-16.
 - **No service installation** outside the approved ADR-011 scope — **install approval granted 2026-10-16** for the four local services (PostgreSQL/Redis/object-storage/Mailpit on E:); anything beyond that (Windows services, Docker, cloud) needs new approval.
 - **Local object storage = SeaweedFS (D-15, confirmed 2026-10-16)**; MinIO officially unavailable.
 - **No cloud provisioning, domains, or external accounts** without approval.
 
 ## Next approval gate
 
-1. **First git commit authorization** (ADR-012 requires separate sign-off) — repo has zero commits; `origin` remote added 2026-10-16 per founder instruction; Phase-2 scaffold + docs are ready to commit in one reviewed batch once authorized.
-2. Phase 2 Foundation work proceeds under the already-granted "install approved → Phase 2" mandate (scaffold done → auth → tenancy → RBAC → case schema → audit → outbox/queue → cross-tenant negative tests as release gates).
+1. **Push to GitHub** — `origin` is configured and root commit `6e903df` exists; every push needs explicit founder approval ("push approved"). Routine commits are pre-authorized (ADR-012 amendment, 2026-10-16).
+2. Phase 2 Foundation work proceeds under the already-granted "install approved → Phase 2" mandate (scaffold done → auth → tenancy → RBAC → case schema → audit → outbox/queue → cross-tenant negative tests as release gates). Migration tool selected by delegation: **node-pg-migrate** (to be formalized in planned ADR-003).
