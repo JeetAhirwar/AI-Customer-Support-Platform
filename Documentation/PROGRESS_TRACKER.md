@@ -77,12 +77,12 @@ Last updated: 2026-10-16
 
 ## Current blockers
 - ~~**B-1:** Local infrastructure install approval~~ → **RESOLVED** (approved + installed + verified 2026-10-16)
-- ~~**B-2:** First git commit~~ → **RESOLVED** (root commit `6e903df`, 55 files, 2026-10-16, founder-approved). **Push: approved + executed 2026-10-16** (founder: *"push approved"*) — future pushes need fresh approval (ADR-012 amendment)
+- ~~**B-2:** First git commit~~ → **RESOLVED** (root commit `6e903df`, 55 files, 2026-10-16, founder-approved). **Pushes: both executed 2026-10-16** under separate *"push approved"* each time; future pushes need fresh approval (ADR-012 amendment)
 - ~~Pending confirmation: **D-15**~~ → **RESOLVED** (founder confirmed SeaweedFS 2026-10-16)
 - Future (scheduled): LLM key+cap (P3); email credentials (P4); telephony decision+number (P5); cloud account (P7); legal/consent policy (P5); segment decision (pilot); pgvector availability (P3)
 
 ## Decisions awaiting approval
-See `DECISIONS_PENDING.md` (relevant now: D-04…D-12 open as scheduled). D-15 confirmed 2026-10-16; commit policy amended 2026-10-16 (routine commits pre-authorized, pushes gated); **first push approved + executed 2026-10-16**.
+See `DECISIONS_PENDING.md` (relevant now: D-04…D-12 open as scheduled). D-15 confirmed 2026-10-16; commit policy amended 2026-10-16 (routine commits pre-authorized, pushes gated); **pushes executed 2026-10-16 (2×, each separately approved)**.
 
 ## Known risks
 1. C: drive nearly full → Docker path blocked (mitigation: native services on E:)
@@ -95,7 +95,7 @@ See `DECISIONS_PENDING.md` (relevant now: D-04…D-12 open as scheduled). D-15 c
 **Continue P2 Foundation** (scaffold ✅, auth ✅, tenancy+RBAC ✅):
 1. **Case/message schema** (DATABASE_DESIGN §2–3: `customers`, `conversations`, `cases`, `messages`) + **execute ADR-003 RLS layer** (`SET LOCAL app.tenant_id`, policies on tenant tables) in the same slice; extend Gate-A negative tests per new table
 2. Then: audit log → outbox/queue (ADR-002) → observability — closing with **cross-tenant negative tests passing** (Gates A/B)
-- ~~First git commit only with separate authorization (B-2)~~ → **DONE 2026-10-16**: root `6e903df` + doc-sync `6b1ca13` + auth `674248a` + push-record `7349dd4` (**pushed to origin**); routine commits pre-authorized, pushes gated (ADR-012 amendment)
+- ~~First git commit only with separate authorization (B-2)~~ → **DONE 2026-10-16**: root `6e903df` + doc-sync `6b1ca13` + auth `674248a` + push-record `7349dd4` + tenancy/RBAC `1de9898` — **all pushed to origin** (2×, each separately approved); routine commits pre-authorized, pushes gated (ADR-012 amendment)
 
 ## Resume commands
 ```powershell
