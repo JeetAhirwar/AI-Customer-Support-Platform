@@ -1,6 +1,9 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
+import { JwtAuthGuard } from './auth/jwt-auth.guard';
 import { AuthModule } from './auth/auth.module';
 import { HealthController } from './health.controller';
+import { TenancyModule } from './tenancy/tenancy.module';
 
 /**
  * Root application module.
@@ -8,8 +11,11 @@ import { HealthController } from './health.controller';
  * see Documentation/SERVICE_BOUNDARIES.md for the target module catalog.
  */
 @Module({
-  imports: [AuthModule],
+  imports: [AuthModule, TenancyModule],
   controllers: [HealthController],
-  providers: [],
+  providers: [
+    // every route requires a valid Bearer JWT unless marked @Public()
+    { provide: APP_GUARD, useClass: JwtAuthGuard },
+  ],
 })
 export class AppModule {}

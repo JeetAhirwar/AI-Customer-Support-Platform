@@ -5,6 +5,10 @@ import { getConfig } from '../config/env';
 export interface AccessTokenClaims {
   sub: string;
   email: string;
+  /** active tenant id — minted only after server-side membership verification */
+  tid?: string;
+  /** display-only role snapshot; authorization re-checks the DB (SECURITY: revocation is immediate) */
+  role?: string;
 }
 
 function issuer(): string {
@@ -14,7 +18,10 @@ function issuer(): string {
 /** Signs a short-lived HS256 access token (TTL from JWT_ACCESS_TTL). */
 export function signAccessToken(claims: AccessTokenClaims): string {
   const cfg = getConfig();
-  return jwt.sign(claims, cfg.jwtAccessSecret, {
+  const payload: jwt.JwtPayload = { sub: claims.sub, email: claims.email };
+  if (claims.tid) payload.tid = claims.tid;
+  if (claims.role) payload.role = claims.role;
+  return jwt.sign(payload, cfg.jwtAccessSecret, {
     algorithm: 'HS256',
     expiresIn: cfg.jwtAccessTtlSec,
     issuer: issuer(),
@@ -31,7 +38,12 @@ export function verifyAccessToken(token: string): AccessTokenClaims {
   if (typeof decoded === 'string' || !decoded.sub || !decoded.email) {
     throw new Error('invalid access token payload');
   }
-  return { sub: decoded.sub, email: String(decoded.email) };
+  return {
+    sub: decoded.sub,
+    email: String(decoded.email),
+    tid: typeof decoded.tid === 'string' ? decoded.tid : undefined,
+    role: typeof decoded.role === 'string' ? decoded.role : undefined,
+  };
 }
 
 /** Opaque 256-bit refresh token + its storage hash (raw token never persisted). */

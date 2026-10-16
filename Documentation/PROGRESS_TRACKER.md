@@ -1,7 +1,7 @@
 # PROGRESS TRACKER
 ## AI Customer Support Platform
 
-**Current phase: Phase 2 (Foundation) — IN PROGRESS · infra ✅ + scaffold ✅ + auth ✅ (2026-10-16) · next: tenancy + RBAC**
+**Current phase: Phase 2 (Foundation) — IN PROGRESS · infra ✅ + scaffold ✅ + auth ✅ + tenancy/RBAC ✅ (2026-10-16) · next: case/message schema (+RLS)**
 Last updated: 2026-10-16
 
 ## Status board
@@ -10,7 +10,7 @@ Last updated: 2026-10-16
 |---|---|---|
 | P0 Discovery | Read 5 DOCX docs, inspect environment, discovery report | **COMPLETED** (2026-10-15) |
 | P1 Architecture & stack approval | ADRs, service boundaries, security model, API contracts; stack approval | **COMPLETED** (2026-10-16): founder approved D-01=A', D-02=TypeScript+NestJS/Fastify, D-03=native/E:, D-07=yes, D-13=chat-first + D-14=claymorphism; final ADRs 001/010–014 issued; full Phase-1 doc set written |
-| P2 Foundation | Git/CI, auth, tenants, RBAC, case/message schema, audit, outbox/queue, observability | **IN PROGRESS** — infra ✅; scaffold ✅; **auth ✅ (2026-10-16)**; tenancy next |
+| P2 Foundation | Git/CI, auth, tenants, RBAC, case/message schema, audit, outbox/queue, observability | **IN PROGRESS** — infra ✅; scaffold ✅; **auth ✅; tenancy+RBAC ✅ (2026-10-16)**; case/message schema next |
 | P3 Chat vertical slice | Widget, chat adapter, knowledge ingestion + RAG, grounded AI, handoff, agent workspace | NOT STARTED |
 | P4 Email | Inbound/outbound, threading, dedup, delivery states, bounce, attachments | NOT STARTED |
 | P5 Inbound voice | Mock first; then provider, speech pipeline, transfer, consent, fallback | NOT STARTED |
@@ -59,10 +59,20 @@ Last updated: 2026-10-16
 - ✅ Tests: unit (password/tokens/rate-limit/config) + **4 DB integration tests** (login, generic-error indistinguishability, rotation+reuse family revocation, logout) — all green
 - ✅ Live HTTP smoke (built `dist/main.js`): 401 generic → 200 login → 200 refresh(rotated) → 401 reuse → 200 logout → 401 post-logout refresh → **429 at attempt 5**; temp rows cleaned up
 
+## Completed tasks (P2 — tenancy + RBAC)
+- ✅ **Migration `002_rbac`** (dev + test DB): `roles`, `role_permissions`, `teams`, `tenant_memberships` (+ `sessions.active_tenant_id`); invitations table deferred to the invite/email-outbox slice
+- ✅ **Tenant authority model** (API_CONTRACTS §13): JWT `tid` claim minted only after server-side membership verification; `POST /v1/auth/switch-tenant` re-verifies membership (cross-tenant probe → generic `permission_denied`, no existence leak); active tenant persisted per session and preserved across refresh
+- ✅ **Global `JwtAuthGuard`** (every route 401s without Bearer JWT unless `@Public()`) + `GET /v1/tenants/mine` (workspace picker)
+- ✅ **RBAC**: per-tenant roles (`owner/admin/agent/viewer`) seeded via `ensureDefaultRoles`, permission catalog (`cases.*`, `knowledge.manage`, `members.manage`, `settings.manage`, `audit.view`, `ai.config.manage`), `RolesGuard` + `@RequireRoles` — **membership re-read from DB per request** (revocation immediate, SECURITY §auth)
+- ✅ **Uniform error envelope** `{error:{code,message,correlation_id,details?}}` (API_CONTRACTS) via global filter: stable codes `unauthorized/permission_denied/validation_failed/rate_limited/...`; 5xx logged with correlation id, internals never leaked
+- ✅ **ADR-003 written + accepted** (tenant isolation: predicates live, RLS scheduled with case schema; migrations tool formalized)
+- ✅ Tests: guards unit (JWT ×6, roles ×5, envelope ×6) + **tenancy DB integration ×6** incl. Gate-A negatives (cross-tenant switch denied both directions, membership isolation, immediate revocation, tid claim round-trip via switch+refresh)
+
 ## Tests run
 - Infra verification matrix 2026-10-16: **ALL CHECKS PASSED** (twice: post-install + post stop/start cycle). S3 signed round-trip: 5/5.
 - App tests 2026-10-16 (scaffold): **vitest 4/4** + typecheck 3/3 + build 3/3; API `/health` live check → 200; worker heartbeat boot check.
 - App tests 2026-10-16 (auth): **workspace vitest 27/27 across 8 files — 6/6 turbo tasks green** (api 24 incl. 4 DB-integration on `ai_csp_test`, worker 2, shared 1) + typecheck/build green; live HTTP smoke matrix all expected codes (401/200/200/401/200/401/429@5).
+- App tests 2026-10-16 (tenancy+RBAC): **workspace vitest 50/50 across 12 files — 6/6 turbo tasks green** (api 47 incl. 10 DB-integration incl. Gate-A cross-tenant negatives, worker 2, shared 1) + typecheck/build green; live HTTP smoke all expected codes incl. `/v1/tenants/mine` (401/200) and cross-tenant `switch-tenant` → **403 permission_denied**.
 - DOCX extraction: 5/5. Git ignore rules: `.env` ignored, `.env.example` trackable.
 
 ## Current blockers
@@ -82,10 +92,10 @@ See `DECISIONS_PENDING.md` (relevant now: D-04…D-12 open as scheduled). D-15 c
 5. Timeline assumes ~20-person team — re-baseline for actual capacity after approval
 
 ## Next recommended task
-**Continue P2 Foundation** (scaffold ✅, auth ✅):
-1. **Tenancy + RBAC**: `tenant_memberships`, `roles`, `role_permissions`, `teams` migration (DATABASE_DESIGN §2) → login response with active memberships → JWT guard + role checks → **cross-tenant negative tests** (Gate A/B) as they land
-2. Then: case/message schema → audit log → outbox/queue → observability — closing with **cross-tenant negative tests passing** (Gates A/B)
-- ~~First git commit only with separate authorization (B-2)~~ → **DONE 2026-10-16**: root `6e903df` + doc-sync `6b1ca13` + auth `674248a`; routine commits pre-authorized (ADR-012 amendment); **first push approved + executed 2026-10-16**
+**Continue P2 Foundation** (scaffold ✅, auth ✅, tenancy+RBAC ✅):
+1. **Case/message schema** (DATABASE_DESIGN §2–3: `customers`, `conversations`, `cases`, `messages`) + **execute ADR-003 RLS layer** (`SET LOCAL app.tenant_id`, policies on tenant tables) in the same slice; extend Gate-A negative tests per new table
+2. Then: audit log → outbox/queue (ADR-002) → observability — closing with **cross-tenant negative tests passing** (Gates A/B)
+- ~~First git commit only with separate authorization (B-2)~~ → **DONE 2026-10-16**: root `6e903df` + doc-sync `6b1ca13` + auth `674248a` + push-record `7349dd4` (**pushed to origin**); routine commits pre-authorized, pushes gated (ADR-012 amendment)
 
 ## Resume commands
 ```powershell

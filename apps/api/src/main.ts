@@ -5,6 +5,7 @@ import {
   NestFastifyApplication,
 } from '@nestjs/platform-fastify';
 import { AppModule } from './app.module';
+import { ErrorEnvelopeFilter } from './common/http-exception.filter';
 import { getConfig } from './config/env';
 
 async function bootstrap(): Promise<void> {
@@ -18,6 +19,9 @@ async function bootstrap(): Promise<void> {
   );
 
   app.enableShutdownHooks();
+
+  // uniform error envelope: { error: { code, message, correlation_id, details? } }
+  app.useGlobalFilters(new ErrorEnvelopeFilter());
 
   await app.listen(config.apiPort, config.apiHost);
   // eslint-disable-next-line no-console

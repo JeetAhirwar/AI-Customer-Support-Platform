@@ -2,6 +2,8 @@ import { randomUUID } from 'crypto';
 import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { getConfig } from '../config/env';
 import { getPool } from '../db/pool';
+import { AppException } from '../common/errors';
+import { TenancyService, type MembershipSummary } from '../tenancy/tenancy.service';
 import { hashPassword, verifyPassword } from './password';
 import {
   hashRefreshToken,
@@ -14,6 +16,9 @@ import {
  *  - short-lived JWT access + rotating refresh tokens (reuse detection revokes
  *    the family)
  *  - generic errors that never reveal account existence
+ *  - tenant context: the JWT `tid` claim is minted only after server-side
+ *    membership verification; roles are display-only snapshots (authorization
+ *    re-checks the DB so revocation is immediate)
  */
 
 interface UserRow {
@@ -29,6 +34,7 @@ interface SessionRow {
   token_hash: string;
   expires_at: Date;
   revoked_at: Date | null;
+  active_tenant_id: string | null;
 }
 
 export interface RequestMeta {
@@ -43,6 +49,7 @@ export interface LoginResult {
   refreshToken: string;
   refreshExpiresAt: string;
   user: { id: string; email: string; status: string };
+  memberships: MembershipSummary[];
 }
 
 /** Constant dummy hash — verified against on unknown accounts so a failed
@@ -66,6 +73,8 @@ function invalidCredentials(): UnauthorizedException {
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
+
+  constructor(private readonly tenancy: TenancyService) {}
 
   async login(
     rawEmail: string,
@@ -101,13 +110,26 @@ export class AuthService {
       throw invalidCredentials();
     }
 
+    const memberships = await this.tenancy.membershipsForUser(user.id);
+    const active = memberships[0];
+
     const familyId = randomUUID();
-    const session = await this.createSession(user.id, familyId, meta);
+    const session = await this.createSession(
+      user.id,
+      familyId,
+      meta,
+      active?.tenant_id ?? null,
+    );
 
     const cfg = getConfig();
-    const accessToken = signAccessToken({ sub: user.id, email: user.email });
+    const accessToken = signAccessToken({
+      sub: user.id,
+      email: user.email,
+      tid: active?.tenant_id,
+      role: active?.role,
+    });
 
-    this.logger.log(`login ok user=${user.id}`);
+    this.logger.log(`login ok user=${user.id} tenant=${active?.tenant_id ?? '-'}`);
 
     return {
       accessToken,
@@ -116,6 +138,7 @@ export class AuthService {
       refreshToken: session.refreshToken,
       refreshExpiresAt: session.refreshExpiresAt.toISOString(),
       user: { id: user.id, email: user.email, status: user.status },
+      memberships,
     };
   }
 
@@ -123,13 +146,118 @@ export class AuthService {
    * Rotating refresh: presenting a valid token revokes it and issues a new one
    * in the same family. Presenting an ALREADY-REVOKED token means the token
    * leaked → the entire family is revoked (SECURITY.md reuse detection).
+   * The active tenant is kept if the membership is still active, else the
+   * default (first) active membership is re-derived.
    */
   async refresh(rawToken: string, meta: RequestMeta): Promise<LoginResult> {
+    const { session, user } = await this.consumeSession(rawToken);
+
+    const kept = session.active_tenant_id
+      ? await this.tenancy.resolveMembership(user.id, session.active_tenant_id)
+      : null;
+
+    let activeTid = kept ? session.active_tenant_id! : undefined;
+    let role = kept ? kept.role : undefined;
+    if (!kept) {
+      const memberships = await this.tenancy.membershipsForUser(user.id);
+      activeTid = memberships[0]?.tenant_id;
+      role = memberships[0]?.role;
+    }
+
+    const next = await this.createSession(
+      user.id,
+      session.refresh_family_id,
+      meta,
+      activeTid ?? null,
+    );
+
+    const cfg = getConfig();
+    const accessToken = signAccessToken({
+      sub: user.id,
+      email: user.email,
+      tid: activeTid,
+      role,
+    });
+
+    return {
+      accessToken,
+      tokenType: 'Bearer',
+      expiresIn: cfg.jwtAccessTtlSec,
+      refreshToken: next.refreshToken,
+      refreshExpiresAt: next.refreshExpiresAt.toISOString(),
+      user: { id: user.id, email: user.email, status: user.status },
+      memberships: await this.tenancy.membershipsForUser(user.id),
+    };
+  }
+
+  /**
+   * Re-bind the session to another tenant AFTER server-side membership
+   * verification (API_CONTRACTS §13 — authority never from headers/bodies).
+   * Non-membership → generic permission_denied (no tenant-existence leak).
+   */
+  async switchTenant(
+    rawToken: string,
+    tenantId: string,
+    meta: RequestMeta,
+  ): Promise<LoginResult> {
+    const { session, user } = await this.consumeSession(rawToken);
+
+    const membership = await this.tenancy.resolveMembership(user.id, tenantId);
+    if (!membership) {
+      throw new AppException('permission_denied', 'No access to this tenant');
+    }
+
+    const next = await this.createSession(
+      user.id,
+      session.refresh_family_id,
+      meta,
+      tenantId,
+    );
+
+    const cfg = getConfig();
+    const accessToken = signAccessToken({
+      sub: user.id,
+      email: user.email,
+      tid: tenantId,
+      role: membership.role,
+    });
+
+    this.logger.log(`switch-tenant ok user=${user.id} tenant=${tenantId}`);
+
+    return {
+      accessToken,
+      tokenType: 'Bearer',
+      expiresIn: cfg.jwtAccessTtlSec,
+      refreshToken: next.refreshToken,
+      refreshExpiresAt: next.refreshExpiresAt.toISOString(),
+      user: { id: user.id, email: user.email, status: user.status },
+      memberships: await this.tenancy.membershipsForUser(user.id),
+    };
+  }
+
+  /** Idempotent: revokes the session matching the token, always reports ok. */
+  async logout(rawToken: string | undefined): Promise<{ ok: true }> {
+    if (rawToken && rawToken.trim() !== '') {
+      const tokenHash = hashRefreshToken(rawToken);
+      await getPool().query(
+        `UPDATE sessions SET revoked_at = now(), revoke_reason = 'logout'
+          WHERE token_hash = $1 AND revoked_at IS NULL`,
+        [tokenHash],
+      );
+    }
+    return { ok: true as const };
+  }
+
+  /** Shared refresh/switch prelude: validates the presented refresh session. */
+  private async consumeSession(
+    rawToken: string,
+  ): Promise<{ session: SessionRow; user: UserRow }> {
     const pool = getPool();
     const tokenHash = hashRefreshToken(rawToken);
 
     const res = await pool.query<SessionRow>(
-      `SELECT id, user_id, refresh_family_id, token_hash, expires_at, revoked_at
+      `SELECT id, user_id, refresh_family_id, token_hash, expires_at,
+              revoked_at, active_tenant_id
          FROM sessions WHERE token_hash = $1`,
       [tokenHash],
     );
@@ -160,48 +288,21 @@ export class AuthService {
     const user = userRes.rows[0];
     if (!user || user.status !== 'active') throw invalidCredentials();
 
-    // rotate: revoke the presented session, mint a new one in the same family
+    // rotate: revoke the presented session (new one is minted by the caller)
     await pool.query(
       `UPDATE sessions SET revoked_at = now(), revoke_reason = 'rotated'
         WHERE id = $1 AND revoked_at IS NULL`,
       [session.id],
     );
-    const next = await this.createSession(
-      user.id,
-      session.refresh_family_id,
-      meta,
-    );
 
-    const cfg = getConfig();
-    const accessToken = signAccessToken({ sub: user.id, email: user.email });
-
-    return {
-      accessToken,
-      tokenType: 'Bearer',
-      expiresIn: cfg.jwtAccessTtlSec,
-      refreshToken: next.refreshToken,
-      refreshExpiresAt: next.refreshExpiresAt.toISOString(),
-      user: { id: user.id, email: user.email, status: user.status },
-    };
-  }
-
-  /** Idempotent: revokes the session matching the token, always reports ok. */
-  async logout(rawToken: string | undefined): Promise<{ ok: true }> {
-    if (rawToken && rawToken.trim() !== '') {
-      const tokenHash = hashRefreshToken(rawToken);
-      await getPool().query(
-        `UPDATE sessions SET revoked_at = now(), revoke_reason = 'logout'
-          WHERE token_hash = $1 AND revoked_at IS NULL`,
-        [tokenHash],
-      );
-    }
-    return { ok: true as const };
+    return { session, user };
   }
 
   private async createSession(
     userId: string,
     familyId: string,
     meta: RequestMeta,
+    activeTenantId: string | null,
   ): Promise<{ refreshToken: string; refreshExpiresAt: Date }> {
     const cfg = getConfig();
     const material = mintRefreshToken();
@@ -209,8 +310,9 @@ export class AuthService {
 
     await getPool().query(
       `INSERT INTO sessions
-         (id, user_id, refresh_family_id, token_hash, expires_at, meta)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
+         (id, user_id, refresh_family_id, token_hash, expires_at, meta,
+          active_tenant_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
       [
         randomUUID(),
         userId,
@@ -218,6 +320,7 @@ export class AuthService {
         material.hash,
         expiresAt,
         JSON.stringify({ ip: meta.ip ?? null, userAgent: meta.userAgent ?? null }),
+        activeTenantId,
       ],
     );
 

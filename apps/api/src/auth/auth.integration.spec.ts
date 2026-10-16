@@ -1,8 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Pool } from 'pg';
 import { resetConfigCache } from '../config/env';
+import { TenancyService } from '../tenancy/tenancy.service';
 import { AuthService } from './auth.service';
 import { hashPassword } from './password';
+import { verifyAccessToken } from './tokens';
 
 /**
  * DB-backed auth integration (Gate-A building block; TESTING_STRATEGY.md).
@@ -40,7 +42,7 @@ d('auth integration against test database', () => {
       );
     }
 
-    auth = new AuthService();
+    auth = new AuthService(new TenancyService());
     loginEmail = `integration-${Date.now()}@example.test`;
 
     const tenantRes = await pool.query<{ id: string }>(
@@ -80,6 +82,9 @@ d('auth integration against test database', () => {
     expect(result.refreshToken).toBeTruthy();
     expect(result.tokenType).toBe('Bearer');
     expect(result.user.email).toBe(loginEmail);
+    // user has no memberships yet → empty list, no tenant claim
+    expect(result.memberships).toEqual([]);
+    expect(verifyAccessToken(result.accessToken).tid).toBeUndefined();
     refresh1 = result.refreshToken;
   }, 30_000);
 

@@ -41,6 +41,14 @@
 - Deps: `@node-rs/argon2` (prebuilt, no install scripts), `jsonwebtoken`, `pg`, `node-pg-migrate`
 - Verified: **workspace tests 27/27 (6/6 turbo tasks), typecheck + build green**; live HTTP smoke matrix — 401 generic → 200 login → 200 refresh(rotated) → 401 reuse → 200 logout → 401 post-logout → **429 at attempt 5**; temp smoke data cleaned up
 
+### Tenancy + RBAC (P2, 2026-10-16)
+- **Migration `002_rbac`** (dev + test DB): `roles`/`role_permissions`/`teams`/`tenant_memberships` + `sessions.active_tenant_id`; invitations deferred to the invite/email slice
+- **Tenant authority = JWT `tid` claim** minted after server-side membership verification (never headers/bodies — API_CONTRACTS §13); `POST /v1/auth/switch-tenant` re-verifies membership (cross-tenant probe → generic `permission_denied`); active tenant preserved across refresh
+- Global `JwtAuthGuard` (non-`@Public()` routes require Bearer JWT) + `GET /v1/tenants/mine`; per-tenant roles owner/admin/agent/viewer with a permission catalog; `RolesGuard` re-reads membership from DB per request (revocation immediate)
+- **Uniform error envelope** `{error:{code,message,correlation_id,details?}}` with stable codes (API_CONTRACTS); 5xx logged with correlation id, internals never leaked
+- **ADR-003 accepted**: tenant isolation (predicates live now; RLS scheduled with case schema) + node-pg-migrate formalized
+- Verified: **workspace tests 50/50 (6/6 turbo tasks)** incl. 10 DB-integration + Gate-A cross-tenant negatives; smoke all expected codes incl. `/v1/tenants/mine` 401/200 and `switch-tenant` → **403 permission_denied**
+
 ### Added
 - Phase-1 documentation set: ARCHITECTURE, SERVICE_BOUNDARIES, SECURITY, DATABASE_DESIGN, API_CONTRACTS, ENVIRONMENT_VARIABLES, LOCAL_DEVELOPMENT_SETUP, TESTING_STRATEGY
 - Final ADRs 001, 010–014 + `adr/README.md` index; drafts file marked superseded

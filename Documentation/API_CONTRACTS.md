@@ -44,7 +44,8 @@
 | `POST /v1/ai-config/{id}/kill-switch` | Pause automation per tenant/channel | Admin only; immediate effect; audited |
 | `GET /v1/analytics/...` | Metric queries | Role scope, documented metric definitions, freshness flag |
 | `GET /v1/audit-events` | Audit trail | Admin only, tenant-scoped, filtered, export audited |
-| `POST /v1/auth/*` | login, refresh, logout, invite, reset | Rate limits, generic errors, revocation semantics |
+| `POST /v1/auth/*` | login, refresh, logout, switch-tenant, invite, reset | Rate limits, generic errors, revocation semantics; tenant authority = JWT `tid` claim minted after server-side membership verification (never headers/bodies) |
+| `GET /v1/tenants/mine` | Active memberships of the caller (workspace picker) | JWT only; server-derived tenant scope |
 
 ### Webhooks (inbound provider events)
 | Endpoint | Purpose | Key checks |
