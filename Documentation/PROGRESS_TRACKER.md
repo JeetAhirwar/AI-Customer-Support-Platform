@@ -67,12 +67,12 @@ Last updated: 2026-10-16
 
 ## Current blockers
 - ~~**B-1:** Local infrastructure install approval~~ → **RESOLVED** (approved + installed + verified 2026-10-16)
-- ~~**B-2:** First git commit~~ → **RESOLVED** (root commit `6e903df`, 55 files, 2026-10-16, founder-approved). **Push to origin still awaiting approval**
+- ~~**B-2:** First git commit~~ → **RESOLVED** (root commit `6e903df`, 55 files, 2026-10-16, founder-approved). **Push: approved + executed 2026-10-16** (founder: *"push approved"*) — future pushes need fresh approval (ADR-012 amendment)
 - ~~Pending confirmation: **D-15**~~ → **RESOLVED** (founder confirmed SeaweedFS 2026-10-16)
 - Future (scheduled): LLM key+cap (P3); email credentials (P4); telephony decision+number (P5); cloud account (P7); legal/consent policy (P5); segment decision (pilot); pgvector availability (P3)
 
 ## Decisions awaiting approval
-See `DECISIONS_PENDING.md` (relevant now: **push approval outstanding**; D-04…D-12 open as scheduled). D-15 confirmed 2026-10-16; commit policy amended 2026-10-16 (routine commits pre-authorized, pushes gated).
+See `DECISIONS_PENDING.md` (relevant now: D-04…D-12 open as scheduled). D-15 confirmed 2026-10-16; commit policy amended 2026-10-16 (routine commits pre-authorized, pushes gated); **first push approved + executed 2026-10-16**.
 
 ## Known risks
 1. C: drive nearly full → Docker path blocked (mitigation: native services on E:)
@@ -85,7 +85,7 @@ See `DECISIONS_PENDING.md` (relevant now: **push approval outstanding**; D-04…
 **Continue P2 Foundation** (scaffold ✅, auth ✅):
 1. **Tenancy + RBAC**: `tenant_memberships`, `roles`, `role_permissions`, `teams` migration (DATABASE_DESIGN §2) → login response with active memberships → JWT guard + role checks → **cross-tenant negative tests** (Gate A/B) as they land
 2. Then: case/message schema → audit log → outbox/queue → observability — closing with **cross-tenant negative tests passing** (Gates A/B)
-- ~~First git commit only with separate authorization (B-2)~~ → **DONE 2026-10-16**: root `6e903df` + doc-sync `6b1ca13`; routine commits now pre-authorized (ADR-012 amendment); push pending approval
+- ~~First git commit only with separate authorization (B-2)~~ → **DONE 2026-10-16**: root `6e903df` + doc-sync `6b1ca13` + auth `674248a`; routine commits pre-authorized (ADR-012 amendment); **first push approved + executed 2026-10-16**
 
 ## Resume commands
 ```powershell

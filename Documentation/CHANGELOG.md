@@ -24,7 +24,8 @@
 ### Version control (ADR-012, founder-authorized)
 - **Root commit `6e903df`** (2026-10-16, founder: *"commit approved"*): 55 files, 4,525 insertions — full doc set + infra runbook + Phase-2 scaffold + lockfile; sensitive-file audit clean (no `.env`, no data/binaries)
 - `origin` remote added per founder instruction: `https://github.com/JeetAhirwar/AI-Customer-Support-Platform.git`
-- **Commit policy amended** (founder: *"jo tumhe sahi lage"* → option (b)): routine local commits pre-authorized (secrets audit + green tests); **pushes always require explicit approval**; no push yet
+- **Commit policy amended** (founder: *"jo tumhe sahi lage"* → option (b)): routine local commits pre-authorized (secrets audit + green tests); **pushes always require explicit approval**
+- **First push approved + executed 2026-10-16** (founder: *"push approved"*) — `master` → `origin` (`https://github.com/JeetAhirwar/AI-Customer-Support-Platform.git`); future pushes need fresh approval
 
 ### Phase-2 monorepo scaffold (P2 start, 2026-10-16)
 - **pnpm 12.11.2 (corepack) + Turborepo 2.11** workspace: `apps/api` (NestJS 11 + Fastify, `/health` endpoint), `apps/worker` (scaffold runtime + heartbeat), `packages/shared`; strict `tsconfig.base.json` (CommonJS backend); CI pipeline `.github/workflows/ci.yml`

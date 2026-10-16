@@ -33,5 +33,5 @@ Status values: **DECIDED** (confirmed + recorded in an ADR) · **OPEN** (not yet
 
 ## Next approval gate
 
-1. **Push to GitHub** — `origin` is configured and root commit `6e903df` exists; every push needs explicit founder approval ("push approved"). Routine commits are pre-authorized (ADR-012 amendment, 2026-10-16).
+1. ~~Push to GitHub~~ → **APPROVED + EXECUTED 2026-10-16** (founder: *"push approved"*): first push of `master` to `origin` covering commits `6e903df`…`674248a` (+ this record). Standing rule per ADR-012 amendment: **every future push needs fresh explicit approval**; routine local commits remain pre-authorized.
 2. Phase 2 Foundation work proceeds under the already-granted "install approved → Phase 2" mandate (scaffold done → auth → tenancy → RBAC → case schema → audit → outbox/queue → cross-tenant negative tests as release gates). Migration tool selected by delegation: **node-pg-migrate** (to be formalized in planned ADR-003).
