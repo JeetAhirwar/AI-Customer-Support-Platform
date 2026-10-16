@@ -29,6 +29,7 @@ Legend: 🔴 secret · 🟢 required · ⚪ optional/phase-dependent
 | `DATABASE_URL` | `postgres://user:pass@localhost:5432/ai_csp` | 🔴 | 🟢 | P2 |
 | `DATABASE_POOL_MAX` | Pool size | — | ⚪ | P2 |
 | `DB_SSL` | `require` in cloud, `false` local | — | ⚪ | P2 |
+| `TEST_DATABASE_URL` | Test DB for integration tests (`ai_csp_test`); suite skips if unset | 🔴 | ⚪ (CI sets it) | P2 |
 
 ## Redis / queue
 

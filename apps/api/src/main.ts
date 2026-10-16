@@ -5,8 +5,13 @@ import {
   NestFastifyApplication,
 } from '@nestjs/platform-fastify';
 import { AppModule } from './app.module';
+import { getConfig } from './config/env';
 
 async function bootstrap(): Promise<void> {
+  // Fail-fast config validation (ENVIRONMENT_VARIABLES.md: startup fails fast,
+  // listing missing variable NAMES only). Also loads repo-root .env locally.
+  const config = getConfig();
+
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
     new FastifyAdapter(),
@@ -14,13 +19,9 @@ async function bootstrap(): Promise<void> {
 
   app.enableShutdownHooks();
 
-  // Config contract: Documentation/ENVIRONMENT_VARIABLES.md ("App" section)
-  const port = Number(process.env.API_PORT ?? 3000);
-  const host = process.env.API_HOST ?? '127.0.0.1';
-
-  await app.listen(port, host);
+  await app.listen(config.apiPort, config.apiHost);
   // eslint-disable-next-line no-console
-  console.log(`[api] listening on http://${host}:${port}`);
+  console.log(`[api] listening on http://${config.apiHost}:${config.apiPort}`);
 }
 
 void bootstrap().catch((err: unknown) => {
