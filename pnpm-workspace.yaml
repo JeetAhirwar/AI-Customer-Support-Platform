@@ -1,0 +1,7 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+# Build-script allowlist (pnpm 11+ blocks postinstalls by default; see pnpm.io/settings/build)
+allowBuilds:
+  esbuild: true

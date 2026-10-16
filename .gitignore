@@ -1,0 +1,59 @@
+# Secrets & environment (never commit)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+credentials.json
+*.p12
+*.pfx
+
+# Dependencies
+node_modules/
+.pnpm-store/
+.yarn/
+
+# Build outputs
+dist/
+build/
+out/
+.next/
+.turbo/
+*.tsbuildinfo
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Local infrastructure data & binaries (Postgres/Redis/SeaweedFS/Mailpit — ADR-011)
+Infrastructure/local-development/data/
+Infrastructure/local-development/bin/
+Infrastructure/local-development/downloads/
+Infrastructure/local-development/backups/
+Infrastructure/local-development/scripts/s3.config
+*.sqlite
+*.rdb
+minio-data/
+mailpit.db
+
+# Testing & coverage
+coverage/
+playwright-report/
+test-results/
+.vitest/
+
+# Local OS / editor
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# Generated / local-only
+*.local
+.cache/
+tmp/
