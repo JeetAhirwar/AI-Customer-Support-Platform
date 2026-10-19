@@ -5,6 +5,7 @@ import { resetConfigCache } from '../config/env';
 import { AuthService } from '../auth/auth.service';
 import { hashPassword } from '../auth/password';
 import { verifyAccessToken } from '../auth/tokens';
+import { withTenant } from '../db/tenant-scope';
 import { TenancyService } from './tenancy.service';
 
 /**
@@ -57,10 +58,13 @@ d('tenancy + RBAC integration', () => {
       `SELECT id FROM roles WHERE tenant_id = $1 AND name = $2`,
       [tenantId, role],
     );
-    await pool.query(
-      `INSERT INTO tenant_memberships (tenant_id, user_id, role_id, status)
-       VALUES ($1, $2, $3, 'active')`,
-      [tenantId, userId, r.rows[0]!.id],
+    // tenant_memberships is RLS-protected (004_rls): writes need tenant scope
+    await withTenant(tenantId, (c) =>
+      c.query(
+        `INSERT INTO tenant_memberships (tenant_id, user_id, role_id, status)
+         VALUES ($1, $2, $3, 'active')`,
+        [tenantId, userId, r.rows[0]!.id],
+      ),
     );
   }
 
@@ -75,8 +79,9 @@ d('tenancy + RBAC integration', () => {
     );
     if (!migrated.rows[0]?.r) {
       throw new Error(
-        'Test DB not migrated with 002_rbac — run: $env:DATABASE_URL = ' +
-          '$env:TEST_DATABASE_URL; pnpm --filter @aicsp/api db:migrate',
+        'Test DB not migrated with 002_rbac+ — run db:migrate with ' +
+          '$env:MIGRATIONS_DATABASE_URL (owner role) pointing at the test DB, ' +
+          'see LOCAL_DEVELOPMENT_SETUP.md',
       );
     }
 
@@ -169,15 +174,19 @@ d('tenancy + RBAC integration', () => {
     const userA = (
       await pool.query<{ id: string }>(`SELECT id FROM users WHERE email = $1`, [emailA])
     ).rows[0]!.id;
-    await pool.query(
-      `UPDATE tenant_memberships SET status = 'disabled' WHERE user_id = $1 AND tenant_id = $2`,
-      [userA, t1],
+    await withTenant(t1, (c) =>
+      c.query(
+        `UPDATE tenant_memberships SET status = 'disabled' WHERE user_id = $1 AND tenant_id = $2`,
+        [userA, t1],
+      ),
     );
     expect(await tenancy.resolveMembership(userA, t1)).toBeNull();
     expect(await tenancy.membershipsForUser(userA)).toHaveLength(0);
-    await pool.query(
-      `UPDATE tenant_memberships SET status = 'active' WHERE user_id = $1 AND tenant_id = $2`,
-      [userA, t1],
+    await withTenant(t1, (c) =>
+      c.query(
+        `UPDATE tenant_memberships SET status = 'active' WHERE user_id = $1 AND tenant_id = $2`,
+        [userA, t1],
+      ),
     );
     expect(await tenancy.resolveMembership(userA, t1)).not.toBeNull();
   });

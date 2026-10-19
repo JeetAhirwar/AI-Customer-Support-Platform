@@ -9,8 +9,9 @@ import { verifyAccessToken } from './tokens';
 /**
  * DB-backed auth integration (Gate-A building block; TESTING_STRATEGY.md).
  * Runs only when TEST_DATABASE_URL points at a migrated test database:
- *   $env:TEST_DATABASE_URL = 'postgres://.../ai_csp_test'
- *   $env:DATABASE_URL = $env:TEST_DATABASE_URL
+ *   $env:TEST_DATABASE_URL = 'postgres://aicsp_app:.../ai_csp_test'
+ *   # migrations run as table OWNER (ADR-003):
+ *   $env:MIGRATIONS_DATABASE_URL = 'postgres://aicsp:.../ai_csp_test'
  *   pnpm --filter @aicsp/api db:migrate
  *   pnpm --filter @aicsp/api test
  */
@@ -37,8 +38,8 @@ d('auth integration against test database', () => {
     );
     if (!migrated.rows[0]?.t) {
       throw new Error(
-        'Test DB not migrated — run: $env:DATABASE_URL = $env:TEST_DATABASE_URL; ' +
-          'pnpm --filter @aicsp/api db:migrate',
+        'Test DB not migrated — run db:migrate with $env:MIGRATIONS_DATABASE_URL ' +
+          '(owner role) pointing at the test DB, see LOCAL_DEVELOPMENT_SETUP.md',
       );
     }
 

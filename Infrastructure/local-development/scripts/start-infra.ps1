@@ -54,13 +54,28 @@ if (-not (Wait-Port 9000 2)) {
             Where-Object { $_ -match '^[A-Z0-9_]+=' } |
             ForEach-Object { $kv = $_ -split '=', 2; $envLines[$kv[0].Trim()] = $kv[1].Trim() }
         $ak = $envLines['S3_ACCESS_KEY']; $sk = $envLines['S3_SECRET_KEY']
-        if (-not $ak -or -not $sk) { $ak = 'aicsplocal'; $sk = 'aicsplocal-dev-secret-0123456789' }
+        if (-not $ak -or -not $sk) {
+            # generate local S3 credentials into .env - never hardcode secrets
+            # in tracked files (they would land in git history)
+            $envPath = Join-Path (Split-Path -Parent (Split-Path -Parent $infra)) ".env"
+            $pool = (97..122) + (48..57)
+            $r = -join ($pool | Get-Random -Count 36 | ForEach-Object { [char]$_ })
+            $r = $r + (-join ($pool | Get-Random -Count 36 | ForEach-Object { [char]$_ }))
+            $ak = 'aicsp' + $r.Substring(0, 10)
+            $sk = $r.Substring(10, 40)
+            if (Test-Path $envPath) {
+                # appended lines win: the .env parser reads keys in order
+                Add-Content -Path $envPath -Value "S3_ACCESS_KEY=$ak"
+                Add-Content -Path $envPath -Value "S3_SECRET_KEY=$sk"
+            }
+            $envLines['S3_ACCESS_KEY'] = $ak; $envLines['S3_SECRET_KEY'] = $sk
+        }
         $cfg = "{`n  `"identities`": [`n    {`n      `"name`": `"aicsp-local`",`n      `"credentials`": [`n        {`n          `"accessKey`": `"$ak`",`n          `"secretKey`": `"$sk`"`n        }`n      ],`n      `"actions`": [`"Admin`", `"Read`", `"List`", `"Tagging`", `"Write`"]`n    }`n  ]`n}`n"
         Set-Content -Path "$infra\scripts\s3.config" -Value $cfg -Encoding ascii
         "[OK] s3.config generated from .env"
     }
     Start-Process -FilePath "$infra\bin\seaweedfs\weed.exe" `
-        -ArgumentList "server","-dir=$infra\data\seaweed","-ip=127.0.0.1","-master.port=9333","-volume.port=8080","-filer.port=8888","-s3","-s3.port=9000","-s3.config=$infra\scripts\s3.config","-master.telemetry=false" `
+        -ArgumentList "server","-dir=$infra\data\seaweed","-ip=127.0.0.1","-master.port=9333","-volume.port=8080","-filer.port=8888","-s3","-s3.port=9000","-s3.config=$infra\scripts\s3.config","-master.telemetry=false","-s3.port.iceberg=0" `
         -RedirectStandardOutput "$infra\logs\seaweed.log" -RedirectStandardError "$infra\logs\seaweed.err" -WindowStyle Hidden | Out-Null
     # S3 gateway starts after filer/IAM init (~25s)
     $s3ok = $false

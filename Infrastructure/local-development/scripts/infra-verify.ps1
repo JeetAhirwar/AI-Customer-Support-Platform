@@ -5,25 +5,39 @@ $root = "E:\AIknotsit-Office-Work\AI-Customer-Support-Platform"
 $infra = "$root\Infrastructure\local-development"
 $r = @()
 
-# DB password from .env (values never printed)
-$envLine = (Get-Content "$root\.env" -Raw) -split "`n" | Where-Object { $_ -match '^DATABASE_URL=' }
-$dbPass = ($envLine -replace '.*aicsp:([^@]+)@.*','$1').Trim()
-$env:PGPASSWORD = $dbPass
+# DB credentials from .env (values never printed). Since ADR-003/004_rls the
+# app connects as least-privilege role aicsp_app (DATABASE_URL); migrations and
+# admin checks run as table OWNER (MIGRATIONS_DATABASE_URL).
+function Get-UrlCreds([string]$line) {
+    if ($line -match 'postgres://([^:]+):([^@]+)@') { return @{ u = $Matches[1]; p = $Matches[2] } }
+    return @{ u = ''; p = '' }
+}
+$envLines = (Get-Content "$root\.env" -Raw) -split "`n"
+$appLine = (($envLines | Where-Object { $_ -match '^DATABASE_URL=' } | Select-Object -First 1) -replace '^DATABASE_URL=','').Trim()
+$ownLine = (($envLines | Where-Object { $_ -match '^MIGRATIONS_DATABASE_URL=' } | Select-Object -First 1) -replace '^MIGRATIONS_DATABASE_URL=','').Trim()
+$appCreds = Get-UrlCreds $appLine
+$ownCreds = Get-UrlCreds $ownLine
 
 # --- 1. PostgreSQL ---
 $ready = & "$infra\bin\pg\bin\pg_isready.exe" -h 127.0.0.1 -p 5432 -t 5 2>&1
 $r += "[PG] ready: $ready"
-$ver = (& "$infra\bin\pg\bin\psql.exe" -U postgres -h 127.0.0.1 -p 5432 -tAc 'SELECT version();' 2>&1)
-$r += "[PG] version: $($ver.Trim())"
-$uuid = 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp";' | & "$infra\bin\pg\bin\psql.exe" -U postgres -h 127.0.0.1 -p 5432 -d ai_csp -v ON_ERROR_STOP=1 2>&1
-$r += "[PG] uuid-ossp: $(($uuid | Select-Object -Last 1))"
-$vec = 'CREATE EXTENSION IF NOT EXISTS vector;' | & "$infra\bin\pg\bin\psql.exe" -U postgres -h 127.0.0.1 -p 5432 -d ai_csp 2>&1
+$env:PGPASSWORD = $ownCreds.p
+$ver = ("$((& "$infra\bin\pg\bin\psql.exe" -U $ownCreds.u -h 127.0.0.1 -p 5432 -d postgres -tAc 'SELECT version();' 2>&1))").Trim()
+if (-not $ver -or $ver -match 'ERROR|FATAL') { $ver = "$ver <-- FAIL" }
+$r += "[PG] version: $ver"
+$uuid = 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp";' | & "$infra\bin\pg\bin\psql.exe" -U $ownCreds.u -h 127.0.0.1 -p 5432 -d ai_csp -v ON_ERROR_STOP=1 2>&1
+$uuidOut = ("$(($uuid | Select-Object -Last 1))").Trim()
+$r += "[PG] uuid-ossp: $(if ($uuidOut -match 'ERROR') { $uuidOut + ' <-- FAIL' } else { 'created or already present' })"
+$vec = 'CREATE EXTENSION IF NOT EXISTS vector;' | & "$infra\bin\pg\bin\psql.exe" -U $ownCreds.u -h 127.0.0.1 -p 5432 -d ai_csp 2>&1
 $r += "[PG] pgvector: $(($vec | Select-Object -First 1))  <-- expected FAIL until Phase 3 (see docs)"
-$login = & "$infra\bin\pg\bin\psql.exe" -U aicsp -h 127.0.0.1 -p 5432 -d ai_csp -tAc 'SELECT current_user || ''@'' || current_database();' 2>&1
-$r += "[PG] app-role login: $($login.Trim())"
-& "$infra\bin\pg\bin\pg_dump.exe" -U postgres -h 127.0.0.1 -p 5432 -Fc -f "$infra\backups\ai_csp_verify.dump" ai_csp 2>&1 | Out-Null
+$env:PGPASSWORD = $appCreds.p
+$login = ("$((& "$infra\bin\pg\bin\psql.exe" -U $appCreds.u -h 127.0.0.1 -p 5432 -d ai_csp -tAc 'SELECT current_user || ''@'' || current_database();' 2>&1))").Trim()
+if ($login -notmatch ('^' + [regex]::Escape($appCreds.u) + '@')) { $login = "$login <-- FAIL" }
+$r += "[PG] app-role login: $login"
+$env:PGPASSWORD = $ownCreds.p
+& "$infra\bin\pg\bin\pg_dump.exe" -U $ownCreds.u -h 127.0.0.1 -p 5432 -Fc -f "$infra\backups\ai_csp_verify.dump" ai_csp 2>&1 | Out-Null
 $bk = Get-Item "$infra\backups\ai_csp_verify.dump" -ErrorAction SilentlyContinue
-$r += "[PG] backup (pg_dump): $(if ($bk) { 'OK, ' + [math]::Round($bk.Length/1KB,1) + ' KB' } else { 'FAIL' })"
+$r += "[PG] backup (pg_dump): $(if ($bk -and $bk.Length -gt 1024) { 'OK, ' + [math]::Round($bk.Length/1KB,1) + ' KB' } else { 'FAIL' })"
 
 # --- 2. Redis (+ persistence across restart) ---
 $pong = & "$infra\bin\redis\redis-cli.exe" ping 2>&1

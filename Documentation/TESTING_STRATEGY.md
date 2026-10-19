@@ -31,7 +31,7 @@ QA-001 grounded FAQ → AI eval suite · QA-002 unknown question → eval (refus
 
 | Gate | Required evidence | Blockers include |
 |---|---|---|
-| **A — PR/CI** | Unit tests, lint, type checks, secret + dependency scans, migration validation | Broken build, exposed secret, unreviewed schema change |
+| **A — PR/CI** | Unit tests, lint, type checks, secret + dependency scans, migration validation, **RLS enforcement suite run as the app role** (`rls.integration.spec.ts`, Gate-A negatives) | Broken build, exposed secret, unreviewed schema change, tenant-policy bypass |
 | **B — Integration** | DB/queue/outbox, provider adapters, signatures, idempotency, permission tests | Cross-tenant access, duplicate customer send, lost job |
 | **C — E2E** | Chat (then email, then voice) happy + failure paths; handoff + resolution | Lost context, unsafe answer, failed fallback |
 | **D — AI quality** | Eval regression set, groundedness, injection + sensitive-request tests | Mandatory handoff ignored, unsupported claim, regression beyond threshold |

@@ -9,7 +9,7 @@
 ## 1. Conventions
 
 - **Primary keys:** UUID v4 (`gen_random_uuid()`), never sequential/guessable (Architecture §8).
-- **Tenant scoping:** every tenant-owned table: `tenant_id UUID NOT NULL REFERENCES tenants(id)` + composite indexes leading with `tenant_id`. RLS enabled on all tenant tables (SECURITY.md §1, ADR-003).
+- **Tenant scoping:** every tenant-owned table: `tenant_id UUID NOT NULL REFERENCES tenants(id)` + composite indexes leading with `tenant_id`. RLS enabled on tenant business tables + `tenant_memberships` (SECURITY.md §1, ADR-003 execution note).
 - **Timestamps:** `created_at`, `updated_at` (UTC, `timestamptz`).
 - **Lifecycle:** explicit status columns with CHECK constraints where practical.
 - **Idempotency:** unique constraints on provider event IDs and idempotency keys **within tenant/provider scope**.

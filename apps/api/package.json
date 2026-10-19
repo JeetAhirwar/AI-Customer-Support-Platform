@@ -8,8 +8,8 @@
     "start": "node dist/main.js",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "db:migrate": "node-pg-migrate up",
-    "db:migrate:down": "node-pg-migrate down"
+    "db:migrate": "node-pg-migrate up --database-url-var MIGRATIONS_DATABASE_URL",
+    "db:migrate:down": "node-pg-migrate down --database-url-var MIGRATIONS_DATABASE_URL"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.0",

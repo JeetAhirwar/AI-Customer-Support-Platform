@@ -1,6 +1,18 @@
 # CHANGELOG
 ## AI Customer Support Platform — significant project changes
 
+## 2026-10-19
+### Case/message schema + RLS enforcement (P2, ADR-003 execution)
+- **Migration `003_conversation`** (dev `ai_csp` + test `ai_csp_test`): `queues`, `customers`, `customer_identities`, `conversations`, `cases`, `messages`, `case_events`, `handoffs` per DATABASE_DESIGN §2–4 — uuid PKs, `tenant_id` FK `ON DELETE CASCADE`, tenant-leading composite indexes, partial uniques (lower(email), external thread where present), status/priority/direction/actor/delivery/channel/state CHECKs; routing rules/agent presence deferred to the routing slice
+- **Migration `004_rls`**: RLS + `USING/WITH CHECK` policies on all 8 business tables + `tenant_memberships` (tenant **or** own-user scope); `NULLIF(current_setting(…), '')` makes the policy fail-closed for both "never set" and the stale `''` left by a committed `SET LOCAL` (a raw `::uuid` cast would error)
+- **Least-privilege app role `aicsp_app`** (cluster-wide, `NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`; one-time loopback-trust creation, `pg_hba` restored to scram + verified): `DATABASE_URL`/`TEST_DATABASE_URL` now point at it (tests exercise real RLS); new **`MIGRATIONS_DATABASE_URL`** holds the owner `aicsp` URL — `db:migrate` reads it via `node-pg-migrate --database-url-var`; future tables auto-granted via `ALTER DEFAULT PRIVILEGES`
+- **Scope helpers** `withTenant`/`withUser` (`src/db/tenant-scope.ts`, transaction-local `set_config` with bind params); `TenancyService` membership reads moved into scopes
+- **Gate-A enforcement tests ×7** (`rls.integration.spec.ts`, run as the app role): foreign-tenant SELECT/INSERT negatives, no-scope fail-closed, `''`-GUC tolerance, scope-leak-on-rollback, membership visibility matrix
+- Empirical findings recorded in ADR-003 execution note: FK cascade bypasses RLS (tenant cleanup semantics); `SET LOCAL` post-commit `''` placeholder
+- Runbook: `start-infra.ps1` adds SeaweedFS `-s3.port.iceberg=0` (port 8181 was held by system `identity.exe`, weed fataled on bind); `infra-verify.ps1` rewritten for the two-role model (`app-role login: aicsp_app@ai_csp`) with hardened version/extension/backup checks
+- **Secrets hygiene fix (pre-commit audit caught it):** the hardcoded S3 fallback credentials in tracked `start-infra.ps1` were removed — the script now generates missing S3 credentials **into `.env`** at first run; local `.env` S3 keys rotated (old fallback values remain in git history — localhost-only SeaweedFS credentials, acceptable; documented here), `s3.config` regenerated from the rotated values; post-change secrets audit: **AUDIT-CLEAN** (90 files, 9 secret values, zero leaks)
+- Verified: **infra-verify ALL CHECKS PASSED**; **vitest 57/57 across 13 files, 6/6 turbo tasks** (+typecheck/build green); live HTTP smoke all expected codes with the API running as `aicsp_app`
+
 ## 2026-10-16
 ### Decisions approved (founder)
 - **D-01 = A'** — modular monolith with extraction path → `adr/ADR-010`

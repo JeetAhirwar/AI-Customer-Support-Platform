@@ -53,7 +53,7 @@ Multi-tenant SaaS: businesses subscribe and configure their own knowledge, chann
 |---|---|---|
 | Frontend | React + TypeScript (Vite); claymorphism styling on blueprint tokens | ADR-014 |
 | Backend | TypeScript, NestJS on Fastify | ADR-001 |
-| Database | PostgreSQL 17 + pgvector; migrations; RLS defense-in-depth | ADR-003 (planned) |
+| Database | PostgreSQL 17 + pgvector; migrations; RLS defense-in-depth | ADR-003 (accepted; RLS live 2026-10-19) |
 | Queue | Transactional outbox (Postgres) → BullMQ on Redis; DLQ | ADR-002 (planned) |
 | Cache/limits | Redis (Windows port locally, 8.10.2; Memurai plan superseded) | ADR-011 |
 | Retrieval | Hybrid: Postgres FTS + pgvector behind retrieval interface | ADR-005 (planned) |

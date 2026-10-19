@@ -14,7 +14,7 @@ Security is a per-sprint workstream, not a final phase. Every item below maps to
 1. Every tenant-owned table has `tenant_id NOT NULL` with FK to tenants.
 2. Tenant context resolved server-side from authenticated membership or validated channel mapping — **never** from client-supplied `tenant_id`.
 3. Repository layer injects tenant predicates on every query; no raw cross-tenant access path exists outside platform-operator tooling (which is audited and time-bound).
-4. **PostgreSQL Row-Level Security as defense-in-depth** (ADR-003): RLS policies on all tenant tables; the application connects with per-request `SET LOCAL app.tenant_id`.
+4. **PostgreSQL Row-Level Security as defense-in-depth** (ADR-003): RLS policies on tenant business tables + `tenant_memberships`; the application connects as the least-privilege `aicsp_app` role with per-transaction `set_config('app.tenant_id', …)` (`withTenant`/`withUser`). Identity tables and authz metadata stay predicate-protected (ADR-003 execution note).
 5. Caches and queues key by tenant; object-storage prefixes per tenant; retrieval filters applied **in SQL**, never only in prompts.
 6. **Negative cross-tenant tests are mandatory CI gates** — API, UI, analytics, retrieval/embeddings, files, exports, recordings (QA-005 + threat scenarios Architecture §7).
 

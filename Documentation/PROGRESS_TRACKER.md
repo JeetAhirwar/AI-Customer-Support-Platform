@@ -1,8 +1,8 @@
 # PROGRESS TRACKER
 ## AI Customer Support Platform
 
-**Current phase: Phase 2 (Foundation) — IN PROGRESS · infra ✅ + scaffold ✅ + auth ✅ + tenancy/RBAC ✅ (2026-10-16) · next: case/message schema (+RLS)**
-Last updated: 2026-10-16
+**Current phase: Phase 2 (Foundation) — IN PROGRESS · infra ✅ + scaffold ✅ + auth ✅ + tenancy/RBAC ✅ + case/message schema + RLS ✅ (2026-10-19) · next: audit log**
+Last updated: 2026-10-19
 
 ## Status board
 
@@ -10,7 +10,7 @@ Last updated: 2026-10-16
 |---|---|---|
 | P0 Discovery | Read 5 DOCX docs, inspect environment, discovery report | **COMPLETED** (2026-10-15) |
 | P1 Architecture & stack approval | ADRs, service boundaries, security model, API contracts; stack approval | **COMPLETED** (2026-10-16): founder approved D-01=A', D-02=TypeScript+NestJS/Fastify, D-03=native/E:, D-07=yes, D-13=chat-first + D-14=claymorphism; final ADRs 001/010–014 issued; full Phase-1 doc set written |
-| P2 Foundation | Git/CI, auth, tenants, RBAC, case/message schema, audit, outbox/queue, observability | **IN PROGRESS** — infra ✅; scaffold ✅; **auth ✅; tenancy+RBAC ✅ (2026-10-16)**; case/message schema next |
+| P2 Foundation | Git/CI, auth, tenants, RBAC, case/message schema, audit, outbox/queue, observability | **IN PROGRESS** — infra ✅; scaffold ✅; **auth ✅; tenancy+RBAC ✅ (2026-10-16); case/message schema + RLS ✅ (2026-10-19)**; audit log next |
 | P3 Chat vertical slice | Widget, chat adapter, knowledge ingestion + RAG, grounded AI, handoff, agent workspace | NOT STARTED |
 | P4 Email | Inbound/outbound, threading, dedup, delivery states, bounce, attachments | NOT STARTED |
 | P5 Inbound voice | Mock first; then provider, speech pipeline, transfer, consent, fallback | NOT STARTED |
@@ -68,11 +68,23 @@ Last updated: 2026-10-16
 - ✅ **ADR-003 written + accepted** (tenant isolation: predicates live, RLS scheduled with case schema; migrations tool formalized)
 - ✅ Tests: guards unit (JWT ×6, roles ×5, envelope ×6) + **tenancy DB integration ×6** incl. Gate-A negatives (cross-tenant switch denied both directions, membership isolation, immediate revocation, tid claim round-trip via switch+refresh)
 
+## Completed tasks (P2 — case/message schema + RLS execution)
+- ✅ (2026-10-19) **Migration `003_conversation`** (dev + test DB, DATABASE_DESIGN §2–4): `queues`, `customers`, `customer_identities`, `conversations`, `cases`, `messages`, `case_events`, `handoffs` — uuid PKs, `tenant_id` FK `ON DELETE CASCADE`, composite indexes leading with `tenant_id`, partial unique (lower(email) / external_thread_id where present), CHECKs for status/priority/direction/actor/delivery/channel/state enums; `routing_rules`/`agent_presence` deferred to the routing slice
+- ✅ (2026-10-19) **ADR-003 RLS executed — migration `004_rls`**: RLS enabled + single `USING/WITH CHECK` policy on the 8 business tables + `tenant_memberships` (tenant **or** own-user GUC); `NULLIF(current_setting(…), '')` tolerates the post-`SET LOCAL` empty placeholder (fail-closed, never a cast error); authz metadata/identity tables predicate-protected (rationale in ADR-003 execution note)
+- ✅ (2026-10-19) **Least-privilege app role `aicsp_app`** (`NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`) created cluster-wide via one-time loopback-trust dance (`pg_hba` restored to scram + verified); DML granted on current tables + `ALTER DEFAULT PRIVILEGES` for future ones (both DBs); `DATABASE_URL`/`TEST_DATABASE_URL` → app role, new `MIGRATIONS_DATABASE_URL` → owner (`db:migrate` uses `--database-url-var`)
+- ✅ (2026-10-19) **Scope helpers** `src/db/tenant-scope.ts` (`withTenant`/`withUser`: dedicated connection, `BEGIN` → `set_config($1,$2,true)` bind params → `COMMIT`/`ROLLBACK`); `TenancyService.membershipsForUser` → `withUser`, `resolveMembership` → `withTenant`
+- ✅ (2026-10-19) **Empirical probes recorded** (ADR-003 execution note): FK `ON DELETE CASCADE` bypasses RLS (owner-style RI triggers → tenant cleanup wipes children); `SET LOCAL` reverts to `''` placeholder (drove the `NULLIF` design)
+- ✅ (2026-10-19) **Gate-A RLS enforcement tests** `src/db/rls.integration.spec.ts` ×7 **as the app role**: foreign-tenant SELECT empty + INSERT `WITH CHECK` violation, no-scope fail-closed read/write, `''` GUC reads empty (no cast error), rolled-back scope leaves no GUC, membership visibility (own-user/tenant/foreign-user negatives)
+- ✅ Runbook updates: `start-infra.ps1` (SeaweedFS `-s3.port.iceberg=0` — port 8181 held by a system agent; **hardcoded S3 fallback creds removed** → generated into `.env` at first run, local S3 keys rotated), `infra-verify.ps1` (two-role credential parsing + `app-role login: aicsp_app@ai_csp` + hardened version/extension/backup checks)
+- ✅ Pre-commit **secrets audit clean** (90 tracked/to-add files × 9 secret values from `.env`, zero leaks; `.env` git-ignored confirmed)
+
 ## Tests run
 - Infra verification matrix 2026-10-16: **ALL CHECKS PASSED** (twice: post-install + post stop/start cycle). S3 signed round-trip: 5/5.
 - App tests 2026-10-16 (scaffold): **vitest 4/4** + typecheck 3/3 + build 3/3; API `/health` live check → 200; worker heartbeat boot check.
 - App tests 2026-10-16 (auth): **workspace vitest 27/27 across 8 files — 6/6 turbo tasks green** (api 24 incl. 4 DB-integration on `ai_csp_test`, worker 2, shared 1) + typecheck/build green; live HTTP smoke matrix all expected codes (401/200/200/401/200/401/429@5).
 - App tests 2026-10-16 (tenancy+RBAC): **workspace vitest 50/50 across 12 files — 6/6 turbo tasks green** (api 47 incl. 10 DB-integration incl. Gate-A cross-tenant negatives, worker 2, shared 1) + typecheck/build green; live HTTP smoke all expected codes incl. `/v1/tenants/mine` (401/200) and cross-tenant `switch-tenant` → **403 permission_denied**.
+- Infra verification matrix 2026-10-19 (post-RLS role split): **ALL CHECKS PASSED** — `app-role login: aicsp_app@ai_csp`, pg_dump 55.8 KB, SeaweedFS S3 5/5 (after `-s3.port.iceberg=0` fix).
+- App tests 2026-10-19 (case/message + RLS): **workspace vitest 57/57 across 13 files — 6/6 turbo tasks green** (api 54 incl. 7 RLS-enforcement DB tests as the app role + auth/tenancy 10 DB-integration, worker 2, shared 1) + typecheck/build green; live HTTP smoke all expected codes (health 200, login 200, `/v1/tenants/mine` 401/200, switch-foreign 403, refresh rotation, reuse 401, logout chain, **429@5**) with the API running as `aicsp_app`.
 - DOCX extraction: 5/5. Git ignore rules: `.env` ignored, `.env.example` trackable.
 
 ## Current blockers
@@ -92,9 +104,9 @@ See `DECISIONS_PENDING.md` (relevant now: D-04…D-12 open as scheduled). D-15 c
 5. Timeline assumes ~20-person team — re-baseline for actual capacity after approval
 
 ## Next recommended task
-**Continue P2 Foundation** (scaffold ✅, auth ✅, tenancy+RBAC ✅):
-1. **Case/message schema** (DATABASE_DESIGN §2–3: `customers`, `conversations`, `cases`, `messages`) + **execute ADR-003 RLS layer** (`SET LOCAL app.tenant_id`, policies on tenant tables) in the same slice; extend Gate-A negative tests per new table
-2. Then: audit log → outbox/queue (ADR-002) → observability — closing with **cross-tenant negative tests passing** (Gates A/B)
+**Continue P2 Foundation** (scaffold ✅, auth ✅, tenancy+RBAC ✅, case/message schema + RLS ✅):
+1. **Audit log** (DATABASE_DESIGN audit section; append-only, tenant-scoped, `audit.view` permission) — then
+2. Then: outbox/queue (ADR-002) → observability — closing with **cross-tenant negative tests passing** (Gates A/B)
 - ~~First git commit only with separate authorization (B-2)~~ → **DONE 2026-10-16**: root `6e903df` + doc-sync `6b1ca13` + auth `674248a` + push-record `7349dd4` + tenancy/RBAC `1de9898` — **all pushed to origin** (2×, each separately approved); routine commits pre-authorized, pushes gated (ADR-012 amendment)
 
 ## Resume commands
@@ -105,6 +117,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$infra\infra-verify.ps1"   
 # in E:\AIknotsit-Office-Work\AI-Customer-Support-Platform (PowerShell 5.1: no && — use ;)
 pnpm install
 pnpm typecheck ; pnpm build ; pnpm test          # integration tests need $env:TEST_DATABASE_URL (see .env)
-pnpm --filter @aicsp/api db:migrate              # DATABASE_URL from .env (dev DB)
+pnpm --filter @aicsp/api db:migrate              # needs $env:MIGRATIONS_DATABASE_URL (owner URL from .env; dev DB)
+# test DB: $env:MIGRATIONS_DATABASE_URL = owner URL with /ai_csp_test, then the same command
 pnpm --filter @aicsp/api start                   # GET http://127.0.0.1:3000/health
 ```

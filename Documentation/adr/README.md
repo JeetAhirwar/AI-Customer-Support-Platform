@@ -4,7 +4,7 @@
 |---|---|---|
 | [ADR-001](ADR-001-backend-typescript-nestjs.md) | Backend language/framework — TypeScript with NestJS (Fastify) | ✅ Accepted 2026-10-16 |
 | ADR-002 | Queue and transactional-outbox pattern | 📋 Planned (Phase 2; Architecture v1 §5.4) |
-| [ADR-003](ADR-003-tenant-isolation-strategy.md) | Tenant isolation strategy (repository predicates + PostgreSQL RLS) + database/migrations foundations | ✅ Accepted 2026-10-16 (app layer live; RLS scheduled with case schema) |
+| [ADR-003](ADR-003-tenant-isolation-strategy.md) | Tenant isolation strategy (repository predicates + PostgreSQL RLS) + database/migrations foundations | ✅ Accepted 2026-10-16; **RLS executed 2026-10-19** (004_rls + `aicsp_app` role, execution note in ADR) |
 | ADR-004 | LLM/embedding provider abstraction and selection | 📋 Deferred to Phase 3 (D-04 open; benchmark OpenAI vs Anthropic; mock-only until spending cap approved) |
 | ADR-005 | Vector retrieval store (pgvector benchmark) | 📋 Planned (Phase 3) |
 | ADR-006 | Telephony/voice architecture and provider | 📋 Deferred to Phase 5 (D-06 open) |

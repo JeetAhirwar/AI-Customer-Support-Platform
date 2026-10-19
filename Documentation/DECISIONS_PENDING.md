@@ -34,4 +34,4 @@ Status values: **DECIDED** (confirmed + recorded in an ADR) · **OPEN** (not yet
 ## Next approval gate
 
 1. ~~Push to GitHub~~ → **EXECUTED twice, both founder-approved 2026-10-16**: first push (`6e903df`…`7349dd4`, *"push approved"*), second push (`1de9898`, tenancy+RBAC, *"push approved"*). Standing rule per ADR-012 amendment: **every future push needs fresh explicit approval**; routine local commits remain pre-authorized.
-2. Phase 2 Foundation work proceeds under the already-granted "install approved → Phase 2" mandate (scaffold done → auth → tenancy → RBAC → case schema → audit → outbox/queue → cross-tenant negative tests as release gates). Migration tool selected by delegation: **node-pg-migrate** (to be formalized in planned ADR-003).
+2. Phase 2 Foundation work proceeds under the already-granted "install approved → Phase 2" mandate (scaffold done → auth → tenancy → RBAC → case schema → audit → outbox/queue → cross-tenant negative tests as release gates). Migration tool selected by delegation: **node-pg-migrate** (formalized in ADR-003).
