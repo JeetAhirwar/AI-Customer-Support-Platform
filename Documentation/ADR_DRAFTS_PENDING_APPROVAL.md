@@ -120,7 +120,7 @@ The Software Architecture document pre-numbered ADR-001…009 as a "to create" l
 | Final ADR | Topic | Source decision | Status |
 |---|---|---|---|
 | ADR-001 | Backend language/framework | **D-02** (this draft) | Draft |
-| ADR-002 | Queue & outbox pattern | (planned, content in Architecture v1 §5.4) | Not started |
+| ADR-002 | Queue & outbox pattern | ✅ Written + accepted 2026-10-19 (`ADR-002-queue-transactional-outbox.md`, executed) | Done |
 | ADR-003 | Tenant isolation strategy (RLS + repository predicates) | (planned, Architecture v1 §7) | Not started |
 | ADR-004 | LLM/embedding provider abstraction | **D-04 — remains OPEN** | Deferred to P3 |
 | ADR-005 | Vector retrieval store | (planned; pgvector benchmark) | Not started |

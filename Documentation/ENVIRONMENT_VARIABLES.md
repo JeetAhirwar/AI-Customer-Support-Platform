@@ -13,7 +13,8 @@ Legend: 🔴 secret · 🟢 required · ⚪ optional/phase-dependent
 | `API_PORT` | API listen port (default 3000) | — | ⚪ | P2 |
 | `API_HOST` | API bind host | — | ⚪ | P2 |
 | `WORKER_CONCURRENCY` | Max concurrent jobs per worker type | — | ⚪ | P2 |
-| `WORKER_HEARTBEAT_MS` | Worker scaffold heartbeat interval (default 30000) | — | ⚪ | P2 |
+| `WORKER_HEARTBEAT_MS` | Worker heartbeat log interval (default 30000) | — | ⚪ | P2 |
+| `WORKER_POLL_MS` | Outbox dispatcher poll interval (default 1000) | — | ⚪ | P2 |
 | `LOG_LEVEL` | pino level (info default) | — | ⚪ | P2 |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Traces/metrics collector (empty = disabled locally) | — | ⚪ | P2 |
 | `APP_SECRET` (or `JWT_ACCESS_SECRET`) | Signing key for access tokens | 🔴 | 🟢 | P2 |
@@ -28,9 +29,11 @@ Legend: 🔴 secret · 🟢 required · ⚪ optional/phase-dependent
 |---|---|---|---|---|
 | `DATABASE_URL` | App connection — least-privilege role `aicsp_app` (RLS applies, ADR-003); `postgres://aicsp_app:pass@localhost:5432/ai_csp` | 🔴 | 🟢 | P2 |
 | `MIGRATIONS_DATABASE_URL` | Table-owner role `aicsp` for `node-pg-migrate` only (owner bypasses RLS for DDL/policies; never read by app runtime) | 🔴 | 🟢 (migrate scripts) | P2 |
+| `WORKER_DATABASE_URL` | Worker (outbox dispatcher) connection — table-owner role `aicsp`: claiming drains all tenants by design, RLS would block it (ADR-002/ADR-003); worker exits at startup if missing | 🔴 | 🟢 (worker) | P2 |
 | `DATABASE_POOL_MAX` | Pool size | — | ⚪ | P2 |
 | `DB_SSL` | `require` in cloud, `false` local | — | ⚪ | P2 |
 | `TEST_DATABASE_URL` | Test DB for integration tests (`ai_csp_test`) as the APP role — suites exercise real RLS; skips if unset | 🔴 | ⚪ (local only) | P2 |
+| `TEST_WORKER_DATABASE_URL` | Test DB (`ai_csp_test`) as the OWNER role for dispatcher integration tests (cross-tenant claims); skips if unset | 🔴 | ⚪ (local only) | P2 |
 
 ## Redis / queue
 

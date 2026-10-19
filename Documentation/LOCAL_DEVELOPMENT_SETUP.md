@@ -56,11 +56,12 @@ pnpm test                            # vitest across packages (DB integration ru
 pnpm dev                             # persistent dev tasks (Turborepo) — per-app dev: pnpm --filter @aicsp/api dev
 pnpm --filter @aicsp/api db:migrate  # reads $env:MIGRATIONS_DATABASE_URL (OWNER role, from .env) via --database-url-var; test DB: set $env:MIGRATIONS_DATABASE_URL to the owner URL ending /ai_csp_test first
 pnpm --filter @aicsp/api start       # run built API (needs services up: start-infra.ps1) -> GET http://127.0.0.1:3000/health
-pnpm --filter @aicsp/worker start    # run built worker (heartbeat + graceful shutdown)
+pnpm --filter @aicsp/worker start    # outbox dispatcher + heartbeat; loads repo-root .env via --env-file-if-exists; requires WORKER_DATABASE_URL (owner role) — exits naming the variable if missing
 ```
 
 Verified 2026-10-16 (scaffold): `typecheck 3/3 · build 3/3 · test 4/4 passed`; API boots (`Nest application successfully started`, `/health` → **200** `{"status":"ok","service":"api",...}`); worker heartbeats and stops cleanly.
 Verified 2026-10-16 (auth): migrations on `ai_csp` + `ai_csp_test` ✅; workspace `test 27/27 · 6/6 turbo tasks` ✅; live smoke of `/v1/auth/*` all expected codes ✅. Note: PowerShell 5.1 has no `&&` — chain with `;`.
+Verified 2026-10-19 (outbox/queue): worker needs `WORKER_DATABASE_URL` (owner role) and fails fast naming it when missing; dispatcher integration tests need `TEST_WORKER_DATABASE_URL` (owner @ `ai_csp_test`) — both rows live in `.env.example`/`.env`; `pnpm --filter @aicsp/worker start` loads the repo-root `.env` automatically.
 
 ## 4. Environment configuration
 

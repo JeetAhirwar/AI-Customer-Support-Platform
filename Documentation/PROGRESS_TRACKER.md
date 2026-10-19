@@ -1,7 +1,7 @@
 # PROGRESS TRACKER
 ## AI Customer Support Platform
 
-**Current phase: Phase 2 (Foundation) — IN PROGRESS · infra ✅ + scaffold ✅ + auth ✅ + tenancy/RBAC ✅ + case/message schema + RLS ✅ + audit log ✅ (2026-10-19) · next: outbox/queue**
+**Current phase: Phase 2 (Foundation) — IN PROGRESS · infra ✅ + scaffold ✅ + auth ✅ + tenancy/RBAC ✅ + case/message schema + RLS ✅ + audit log ✅ + outbox/queue ✅ (2026-10-19) · next: observability**
 Last updated: 2026-10-19
 
 ## Status board
@@ -10,7 +10,7 @@ Last updated: 2026-10-19
 |---|---|---|
 | P0 Discovery | Read 5 DOCX docs, inspect environment, discovery report | **COMPLETED** (2026-10-15) |
 | P1 Architecture & stack approval | ADRs, service boundaries, security model, API contracts; stack approval | **COMPLETED** (2026-10-16): founder approved D-01=A', D-02=TypeScript+NestJS/Fastify, D-03=native/E:, D-07=yes, D-13=chat-first + D-14=claymorphism; final ADRs 001/010–014 issued; full Phase-1 doc set written |
-| P2 Foundation | Git/CI, auth, tenants, RBAC, case/message schema, audit, outbox/queue, observability | **IN PROGRESS** — infra ✅; scaffold ✅; **auth ✅; tenancy+RBAC ✅ (2026-10-16); case/message schema + RLS ✅ (2026-10-19); audit log ✅ (2026-10-19)**; outbox/queue next |
+| P2 Foundation | Git/CI, auth, tenants, RBAC, case/message schema, audit, outbox/queue, observability | **IN PROGRESS** — infra ✅; scaffold ✅; **auth ✅; tenancy+RBAC ✅ (2026-10-16); case/message schema + RLS ✅ (2026-10-19); audit log ✅ (2026-10-19); outbox/queue ✅ (2026-10-19)**; observability next |
 | P3 Chat vertical slice | Widget, chat adapter, knowledge ingestion + RAG, grounded AI, handoff, agent workspace | NOT STARTED |
 | P4 Email | Inbound/outbound, threading, dedup, delivery states, bounce, attachments | NOT STARTED |
 | P5 Inbound voice | Mock first; then provider, speech pipeline, transfer, consent, fallback | NOT STARTED |
@@ -88,6 +88,15 @@ Last updated: 2026-10-19
 - ✅ Fix found via live boot: `RolesGuard` needs `TenancyService` → `AuditModule` imports `TenancyModule` (unit tests don't wire modules — boot smoke caught it)
 - ✅ Live HTTP smoke extended: admin `GET /v1/audit-events` → 200 with the `auth.login` event (ip/ua metadata), bad cursor → 400, bad limit → 400, no token → 401; full auth chain re-verified (429@5, reuse 401, switch-foreign 403)
 
+## Completed tasks (P2 — outbox/queue execution, ADR-002)
+- ✅ (2026-10-19) **ADR-002 written + accepted** (queue & transactional-outbox pattern): Postgres `outbox_events` = durability source of truth; worker dispatch via per-batch `FOR UPDATE SKIP LOCKED` transactions; at-least-once + handler idempotency on event id; retries `min(base·2^(n-1), cap) + jitter`; DLQ = `state='dead'` (operator action); handler registry partitions the stream by event type; Redis/BullMQ staged *behind* the outbox when volume demands (TECH_STACK_EVALUATION recommended path)
+- ✅ (2026-10-19) **Migration `006_outbox`** (dev + test DB, DATABASE_DESIGN §5): `outbox_events(id, tenant_id, type, schema_version, payload_ref, correlation_id, state, attempts, next_attempt_at, created_at, published_at)` — `CHECK (state IN ('pending','published','dead'))`, **global partial claim index** `(next_attempt_at) WHERE state='pending'` (cross-tenant drain by design — documented exception to tenant-leading), tenant diagnostics index `(tenant_id, type, created_at)`; RLS tenant policy + **`REVOKE UPDATE, DELETE … FROM aicsp_app`** (API role append-only, like 005_audit)
+- ✅ (2026-10-19) **`OutboxService`** (global leaf module): `append(client, event)` takes the **caller's withTenant transaction** — the event commits/rolls back atomically with the business rows (the transactional-outbox proof, tested); returns the event id (the at-least-once dedup key); `X-Correlation-ID` flows into `correlation_id`; payload discipline = audit-style (no message bodies)
+- ✅ (2026-10-19) **`OutboxDispatcher`** (worker, `pg` dep added): claim → handle → finalize in ONE transaction (crash → rollback → re-claim; no stuck `processing` states, no reaper); claims only registered event types (unhandled stay pending for future workers); DLQ logged loudly (alert-ready); `startDispatcherLoop` poll loop with overlapping-tick backpressure; worker connects as **owner role** via new `WORKER_DATABASE_URL` (cross-tenant claims would be blocked by RLS — ADR-003 two-role model; exits at startup naming the variable if missing); `start` script loads repo-root `.env` via `--env-file-if-exists`
+- ✅ (2026-10-19) **Env contract**: `WORKER_DATABASE_URL`, `WORKER_POLL_MS`, `TEST_WORKER_DATABASE_URL` rows (ENVIRONMENT_VARIABLES + `.env.example`); turbo `test.env` extended (strict env-mode was dropping the new test var — integration suite silently skipped until declared)
+- ✅ (2026-10-19) **Gate-B tests ×17**: API `outbox.integration.spec.ts` ×5 as the app role — **atomicity (rolled-back append disappears)**, cross-tenant isolation + WITH CHECK forge, append-only (UPDATE/DELETE denied), no-scope fail-closed; worker `dispatcher.integration.spec.ts` ×6 as the owner role — publish path with envelope round-trip, retry→backoff→DLQ chain (`next_attempt_at` ≈ now+base), **SKIP LOCKED under two concurrent dispatchers (exactly-once claims)**, unhandled types left pending, cross-tenant drain, re-claim after finalize loss; worker `dispatcher.spec.ts` ×4 — backoff math (exponential/cap/jitter bound), empty-registry no-op, claim-filter surface, poll-loop wiring + onError
+- ✅ Verified: worker boot (missing var → exit 1 naming it; with var → `[worker] started (outbox dispatcher, poll=1000ms, types=0)`); API unchanged paths re-smoked
+
 ## Tests run
 - Infra verification matrix 2026-10-16: **ALL CHECKS PASSED** (twice: post-install + post stop/start cycle). S3 signed round-trip: 5/5.
 - App tests 2026-10-16 (scaffold): **vitest 4/4** + typecheck 3/3 + build 3/3; API `/health` live check → 200; worker heartbeat boot check.
@@ -96,6 +105,7 @@ Last updated: 2026-10-19
 - Infra verification matrix 2026-10-19 (post-RLS role split): **ALL CHECKS PASSED** — `app-role login: aicsp_app@ai_csp`, pg_dump 55.8 KB, SeaweedFS S3 5/5 (after `-s3.port.iceberg=0` fix).
 - App tests 2026-10-19 (case/message + RLS): **workspace vitest 57/57 across 13 files — 6/6 turbo tasks green** (api 54 incl. 7 RLS-enforcement DB tests as the app role + auth/tenancy 10 DB-integration, worker 2, shared 1) + typecheck/build green; live HTTP smoke all expected codes (health 200, login 200, `/v1/tenants/mine` 401/200, switch-foreign 403, refresh rotation, reuse 401, logout chain, **429@5**) with the API running as `aicsp_app`.
 - App tests 2026-10-19 (audit log): **workspace vitest 74/74 across 15 files — 6/6 turbo tasks green** (api 71 incl. 11 audit DB-integration as the app role + 6 controller unit + prior suites, worker 2, shared 1) + typecheck/build green; live HTTP smoke extended (audit list 200 with `auth.login` event, bad cursor/limit 400, no token 401) — full auth chain re-verified.
+- App tests 2026-10-19 (outbox/queue): **workspace vitest 89/89 across 17 files — 6/6 turbo tasks green** (api 76 incl. 5 outbox Gate-B DB tests as the app role, worker 12 incl. 6 dispatcher integration as the owner role + 4 unit, shared 1) + typecheck/build green; worker boot verified both paths (fail-fast without `WORKER_DATABASE_URL`, dispatcher idle with it). Redis not required for this slice (BullMQ deferred per ADR-002 §7).
 - DOCX extraction: 5/5. Git ignore rules: `.env` ignored, `.env.example` trackable.
 
 ## Current blockers
@@ -115,9 +125,9 @@ See `DECISIONS_PENDING.md` (relevant now: D-04…D-12 open as scheduled). D-15 c
 5. Timeline assumes ~20-person team — re-baseline for actual capacity after approval
 
 ## Next recommended task
-**Continue P2 Foundation** (scaffold ✅, auth ✅, tenancy+RBAC ✅, case/message schema + RLS ✅, audit log ✅):
-1. **Outbox/queue** (ADR-002 transactional outbox + worker consumption) →
-2. Then: observability — closing with **cross-tenant negative tests passing** (Gates A/B)
+**Continue P2 Foundation** (scaffold ✅, auth ✅, tenancy+RBAC ✅, case/message schema + RLS ✅, audit log ✅, outbox/queue ✅):
+1. **Observability** (structured logs + correlation propagation + health/metrics baselines, ENVIRONMENT_VARIABLES `OTEL_*` ready) — then
+2. Close P2 with **cross-tenant negative tests passing** (Gates A/B) as the release gate; producer wiring (`case.created` etc.) starts with the cases API (P3)
 - ~~First git commit only with separate authorization (B-2)~~ → **DONE 2026-10-16**: root `6e903df` + doc-sync `6b1ca13` + auth `674248a` + push-record `7349dd4` + tenancy/RBAC `1de9898` — **all pushed to origin** (2×, each separately approved); routine commits pre-authorized, pushes gated (ADR-012 amendment)
 
 ## Resume commands
