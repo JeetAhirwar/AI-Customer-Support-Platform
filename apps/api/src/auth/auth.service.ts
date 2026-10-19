@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import { AuditService, type AuditEventInput } from '../audit/audit.service';
 import { getConfig } from '../config/env';
 import { getPool } from '../db/pool';
 import { AppException } from '../common/errors';
@@ -19,6 +20,11 @@ import {
  *  - tenant context: the JWT `tid` claim is minted only after server-side
  *    membership verification; roles are display-only snapshots (authorization
  *    re-checks the DB so revocation is immediate)
+ *  - access-sensitive events are audited (FR-018, SECURITY.md §8): login
+ *    (success + failure), tenant switch (success + denial), logout, refresh
+ *    reuse detection. Audit-write failures propagate — "audit-write failure
+ *    fails the business transaction" (no silent gaps). Refresh rotation is
+ *    normal hygiene and stays in the sessions table, not the audit trail.
  */
 
 interface UserRow {
@@ -70,11 +76,19 @@ function invalidCredentials(): UnauthorizedException {
   return new UnauthorizedException('Invalid credentials');
 }
 
+/** request facts only — never message bodies (DATABASE_DESIGN §5) */
+function metaMetadata(meta: RequestMeta): Record<string, unknown> {
+  return { ip: meta.ip ?? null, userAgent: meta.userAgent ?? null };
+}
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
 
-  constructor(private readonly tenancy: TenancyService) {}
+  constructor(
+    private readonly tenancy: TenancyService,
+    private readonly audit: AuditService,
+  ) {}
 
   async login(
     rawEmail: string,
@@ -92,6 +106,7 @@ export class AuthService {
 
     if (!user) {
       await verifyPassword(await getDummyHash(), password); // equalize timing
+      await this.auditLoginFailure(null, meta, 'unknown_account');
       throw invalidCredentials();
     }
 
@@ -102,11 +117,17 @@ export class AuthService {
     const credential = credRes.rows[0];
     if (!credential) {
       await verifyPassword(await getDummyHash(), password);
+      await this.auditLoginFailure(user, meta, 'invalid_credentials');
       throw invalidCredentials();
     }
 
     const passwordOk = await verifyPassword(credential.password_hash, password);
-    if (!passwordOk || user.status !== 'active') {
+    if (!passwordOk) {
+      await this.auditLoginFailure(user, meta, 'invalid_credentials');
+      throw invalidCredentials();
+    }
+    if (user.status !== 'active') {
+      await this.auditLoginFailure(user, meta, 'account_inactive');
       throw invalidCredentials();
     }
 
@@ -129,6 +150,25 @@ export class AuthService {
       role: active?.role,
     });
 
+    if (active) {
+      await this.audit.record({
+        tenantId: active.tenant_id,
+        actorType: 'user',
+        actorId: user.id,
+        action: 'auth.login',
+        targetType: 'session',
+        targetId: session.id,
+        outcome: 'success',
+        metadata: metaMetadata(meta),
+      });
+    } else {
+      // documented edge: no membership → no tenant to anchor the event to
+      // (the audit store is tenant-scoped by spec) — structured log only
+      this.logger.warn(
+        `login ok but no memberships user=${user.id} — audit skipped`,
+      );
+    }
+
     this.logger.log(`login ok user=${user.id} tenant=${active?.tenant_id ?? '-'}`);
 
     return {
@@ -150,7 +190,7 @@ export class AuthService {
    * default (first) active membership is re-derived.
    */
   async refresh(rawToken: string, meta: RequestMeta): Promise<LoginResult> {
-    const { session, user } = await this.consumeSession(rawToken);
+    const { session, user } = await this.consumeSession(rawToken, meta);
 
     const kept = session.active_tenant_id
       ? await this.tenancy.resolveMembership(user.id, session.active_tenant_id)
@@ -200,10 +240,19 @@ export class AuthService {
     tenantId: string,
     meta: RequestMeta,
   ): Promise<LoginResult> {
-    const { session, user } = await this.consumeSession(rawToken);
+    const { session, user } = await this.consumeSession(rawToken, meta);
 
     const membership = await this.tenancy.resolveMembership(user.id, tenantId);
     if (!membership) {
+      // a denied cross-tenant probe is a security-relevant event (Gate-A
+      // signal) — recorded under the CURRENT tenant anchor, then denied
+      await this.auditSessionEvent(session.user_id, session.active_tenant_id, {
+        action: 'tenant.switch',
+        targetType: 'tenant',
+        targetId: tenantId,
+        outcome: 'denied',
+        metadata: { ...metaMetadata(meta), attempted_tenant_id: tenantId },
+      });
       throw new AppException('permission_denied', 'No access to this tenant');
     }
 
@@ -222,6 +271,20 @@ export class AuthService {
       role: membership.role,
     });
 
+    await this.audit.record({
+      tenantId,
+      actorType: 'user',
+      actorId: user.id,
+      action: 'tenant.switch',
+      targetType: 'tenant',
+      targetId: tenantId,
+      outcome: 'success',
+      metadata: {
+        ...metaMetadata(meta),
+        previous_tenant_id: session.active_tenant_id,
+      },
+    });
+
     this.logger.log(`switch-tenant ok user=${user.id} tenant=${tenantId}`);
 
     return {
@@ -235,15 +298,42 @@ export class AuthService {
     };
   }
 
-  /** Idempotent: revokes the session matching the token, always reports ok. */
-  async logout(rawToken: string | undefined): Promise<{ ok: true }> {
+  /**
+   * Idempotent: revokes the session matching the token, always reports ok.
+   * The logout itself is access-sensitive → audited under the session's
+   * tenant anchor (unknown/dead tokens stay a silent no-op).
+   */
+  async logout(
+    rawToken: string | undefined,
+    meta: RequestMeta = {},
+  ): Promise<{ ok: true }> {
     if (rawToken && rawToken.trim() !== '') {
       const tokenHash = hashRefreshToken(rawToken);
-      await getPool().query(
-        `UPDATE sessions SET revoked_at = now(), revoke_reason = 'logout'
+      const pool = getPool();
+      const res = await pool.query<{
+        id: string;
+        user_id: string;
+        active_tenant_id: string | null;
+      }>(
+        `SELECT id, user_id, active_tenant_id FROM sessions
           WHERE token_hash = $1 AND revoked_at IS NULL`,
         [tokenHash],
       );
+      const session = res.rows[0];
+      if (session) {
+        await pool.query(
+          `UPDATE sessions SET revoked_at = now(), revoke_reason = 'logout'
+            WHERE id = $1 AND revoked_at IS NULL`,
+          [session.id],
+        );
+        await this.auditSessionEvent(session.user_id, session.active_tenant_id, {
+          action: 'auth.logout',
+          targetType: 'session',
+          targetId: session.id,
+          outcome: 'success',
+          metadata: metaMetadata(meta),
+        });
+      }
     }
     return { ok: true as const };
   }
@@ -251,6 +341,7 @@ export class AuthService {
   /** Shared refresh/switch prelude: validates the presented refresh session. */
   private async consumeSession(
     rawToken: string,
+    meta: RequestMeta,
   ): Promise<{ session: SessionRow; user: UserRow }> {
     const pool = getPool();
     const tokenHash = hashRefreshToken(rawToken);
@@ -274,6 +365,17 @@ export class AuthService {
           WHERE refresh_family_id = $1 AND revoked_at IS NULL`,
         [session.refresh_family_id],
       );
+      // a reuse detection is a leaked-token signal — audited before failing
+      await this.auditSessionEvent(session.user_id, session.active_tenant_id, {
+        action: 'auth.refresh_reuse',
+        targetType: 'session',
+        targetId: session.id,
+        outcome: 'failure',
+        metadata: {
+          ...metaMetadata(meta),
+          refresh_family_id: session.refresh_family_id,
+        },
+      });
       throw invalidCredentials();
     }
 
@@ -303,10 +405,11 @@ export class AuthService {
     familyId: string,
     meta: RequestMeta,
     activeTenantId: string | null,
-  ): Promise<{ refreshToken: string; refreshExpiresAt: Date }> {
+  ): Promise<{ id: string; refreshToken: string; refreshExpiresAt: Date }> {
     const cfg = getConfig();
     const material = mintRefreshToken();
     const expiresAt = new Date(Date.now() + cfg.jwtRefreshTtlSec * 1000);
+    const id = randomUUID();
 
     await getPool().query(
       `INSERT INTO sessions
@@ -314,7 +417,7 @@ export class AuthService {
           active_tenant_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
       [
-        randomUUID(),
+        id,
         userId,
         familyId,
         material.hash,
@@ -324,6 +427,69 @@ export class AuthService {
       ],
     );
 
-    return { refreshToken: material.token, refreshExpiresAt: expiresAt };
+    return { id, refreshToken: material.token, refreshExpiresAt: expiresAt };
+  }
+
+  /**
+   * Failed-login audit (SECURITY.md §8 access-sensitive events). Unknown
+   * accounts have no tenant anchor (the audit store is tenant-scoped by
+   * spec) → structured log only; known accounts are recorded under their
+   * default membership tenant. Write failures PROPAGATE (audit-write failure
+   * fails the request — no silent gaps).
+   */
+  private async auditLoginFailure(
+    user: UserRow | null,
+    meta: RequestMeta,
+    reason: 'unknown_account' | 'invalid_credentials' | 'account_inactive',
+  ): Promise<void> {
+    if (!user) {
+      this.logger.warn(`login failed (unknown account) ip=${meta.ip ?? '-'}`);
+      return;
+    }
+    const memberships = await this.tenancy.membershipsForUser(user.id);
+    const tenantId = memberships[0]?.tenant_id;
+    if (!tenantId) {
+      this.logger.warn(
+        `login failed user=${user.id} reason=${reason} — audit skipped (no membership)`,
+      );
+      return;
+    }
+    await this.audit.record({
+      tenantId,
+      actorType: 'user',
+      actorId: user.id,
+      action: 'auth.login',
+      targetType: 'user',
+      targetId: user.id,
+      outcome: 'failure',
+      metadata: { ...metaMetadata(meta), reason },
+    });
+  }
+
+  /**
+   * Records a session-scoped event under the session's active tenant,
+   * falling back to the user's default membership; skips (log-only) when the
+   * user has no tenant anchor at all — a structural edge, not a write gap.
+   */
+  private async auditSessionEvent(
+    userId: string,
+    activeTenantId: string | null,
+    event: Omit<AuditEventInput, 'tenantId' | 'actorId' | 'actorType'>,
+  ): Promise<void> {
+    const tenantId =
+      activeTenantId ??
+      (await this.tenancy.membershipsForUser(userId))[0]?.tenant_id;
+    if (!tenantId) {
+      this.logger.warn(
+        `audit skipped action=${event.action} user=${userId} (no tenant anchor)`,
+      );
+      return;
+    }
+    await this.audit.record({
+      ...event,
+      tenantId,
+      actorId: userId,
+      actorType: 'user',
+    });
   }
 }

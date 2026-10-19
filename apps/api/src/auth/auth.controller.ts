@@ -73,9 +73,12 @@ export class AuthController {
 
   @Post('logout')
   @HttpCode(200)
-  async logout(@Body() body: Record<string, unknown>) {
+  async logout(
+    @Body() body: Record<string, unknown>,
+    @Req() req: FastifyRequest,
+  ) {
     const refreshToken = optionalString(body?.refreshToken, 'refreshToken');
-    return this.auth.logout(refreshToken);
+    return this.auth.logout(refreshToken, metaOf(req));
   }
 
   @Post('switch-tenant')

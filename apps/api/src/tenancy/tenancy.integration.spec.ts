@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Pool } from 'pg';
 import { AppException } from '../common/errors';
 import { resetConfigCache } from '../config/env';
+import { AuditService } from '../audit/audit.service';
 import { AuthService } from '../auth/auth.service';
 import { hashPassword } from '../auth/password';
 import { verifyAccessToken } from '../auth/tokens';
@@ -86,7 +87,7 @@ d('tenancy + RBAC integration', () => {
     }
 
     tenancy = new TenancyService();
-    auth = new AuthService(tenancy);
+    auth = new AuthService(tenancy, new AuditService());
 
     const stamp = Date.now();
     emailA = `tenancy-a-${stamp}@example.test`;

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Pool } from 'pg';
+import { AuditService } from '../audit/audit.service';
 import { resetConfigCache } from '../config/env';
 import { TenancyService } from '../tenancy/tenancy.service';
 import { AuthService } from './auth.service';
@@ -43,7 +44,7 @@ d('auth integration against test database', () => {
       );
     }
 
-    auth = new AuthService(new TenancyService());
+    auth = new AuthService(new TenancyService(), new AuditService());
     loginEmail = `integration-${Date.now()}@example.test`;
 
     const tenantRes = await pool.query<{ id: string }>(

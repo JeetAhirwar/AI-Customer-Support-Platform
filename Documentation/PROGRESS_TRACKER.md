@@ -1,7 +1,7 @@
 # PROGRESS TRACKER
 ## AI Customer Support Platform
 
-**Current phase: Phase 2 (Foundation) — IN PROGRESS · infra ✅ + scaffold ✅ + auth ✅ + tenancy/RBAC ✅ + case/message schema + RLS ✅ (2026-10-19) · next: audit log**
+**Current phase: Phase 2 (Foundation) — IN PROGRESS · infra ✅ + scaffold ✅ + auth ✅ + tenancy/RBAC ✅ + case/message schema + RLS ✅ + audit log ✅ (2026-10-19) · next: outbox/queue**
 Last updated: 2026-10-19
 
 ## Status board
@@ -10,7 +10,7 @@ Last updated: 2026-10-19
 |---|---|---|
 | P0 Discovery | Read 5 DOCX docs, inspect environment, discovery report | **COMPLETED** (2026-10-15) |
 | P1 Architecture & stack approval | ADRs, service boundaries, security model, API contracts; stack approval | **COMPLETED** (2026-10-16): founder approved D-01=A', D-02=TypeScript+NestJS/Fastify, D-03=native/E:, D-07=yes, D-13=chat-first + D-14=claymorphism; final ADRs 001/010–014 issued; full Phase-1 doc set written |
-| P2 Foundation | Git/CI, auth, tenants, RBAC, case/message schema, audit, outbox/queue, observability | **IN PROGRESS** — infra ✅; scaffold ✅; **auth ✅; tenancy+RBAC ✅ (2026-10-16); case/message schema + RLS ✅ (2026-10-19)**; audit log next |
+| P2 Foundation | Git/CI, auth, tenants, RBAC, case/message schema, audit, outbox/queue, observability | **IN PROGRESS** — infra ✅; scaffold ✅; **auth ✅; tenancy+RBAC ✅ (2026-10-16); case/message schema + RLS ✅ (2026-10-19); audit log ✅ (2026-10-19)**; outbox/queue next |
 | P3 Chat vertical slice | Widget, chat adapter, knowledge ingestion + RAG, grounded AI, handoff, agent workspace | NOT STARTED |
 | P4 Email | Inbound/outbound, threading, dedup, delivery states, bounce, attachments | NOT STARTED |
 | P5 Inbound voice | Mock first; then provider, speech pipeline, transfer, consent, fallback | NOT STARTED |
@@ -78,6 +78,16 @@ Last updated: 2026-10-19
 - ✅ Runbook updates: `start-infra.ps1` (SeaweedFS `-s3.port.iceberg=0` — port 8181 held by a system agent; **hardcoded S3 fallback creds removed** → generated into `.env` at first run, local S3 keys rotated), `infra-verify.ps1` (two-role credential parsing + `app-role login: aicsp_app@ai_csp` + hardened version/extension/backup checks)
 - ✅ Pre-commit **secrets audit clean** (90 tracked/to-add files × 9 secret values from `.env`, zero leaks; `.env` git-ignored confirmed)
 
+## Completed tasks (P2 — audit log execution)
+- ✅ (2026-10-19) **Migration `005_audit`** (dev + test DB, DATABASE_DESIGN §5): `audit_events(id, tenant_id, actor_type, actor_id, action, target_type, target_id, outcome, correlation_id, metadata jsonb, occurred_at)` — uuid PK, `tenant_id` FK `ON DELETE CASCADE`, no FK on `actor_id` (trail outlives actors), `target_id` text (composite keys), CHECKs on actor_type (`user/system/ai/integration`) + outcome (`success/failure/denied`); indexes `(tenant_id, occurred_at, id)` keyset + `(tenant_id, action)` + `(tenant_id, actor_id)`
+- ✅ (2026-10-19) **Append-only + RLS enforced in-schema**: tenant policy (`USING/WITH CHECK`, same `NULLIF` shape as 004) + **`REVOKE UPDATE, DELETE ON audit_events FROM aicsp_app`** — the app role is INSERT-only; owner `aicsp` keeps full DML for retention/admin (documented exception)
+- ✅ (2026-10-19) **`AuditService`** (global leaf module, SERVICE_BOUNDARIES §10): `record()` appends via `withTenant` and **rejects on write failure** — callers await it, so audit-write failure fails the sensitive transaction (SECURITY §8, no silent gaps); `list()` keyset pagination `(occurred_at, id) DESC` + filters (action/actor/outcome/target/time window); no message bodies in metadata (spec)
+- ✅ (2026-10-19) **Auth event hooks** (FR-018): `auth.login` success + failure (`invalid_credentials`/`account_inactive` under the user's default-tenant anchor; unknown accounts are log-only — no tenant to anchor to), `tenant.switch` success (under TARGET tenant) + **denied** (under current tenant with `attempted_tenant_id` — Gate-A probe signal), `auth.logout`, `auth.refresh_reuse` (leaked-token signal, recorded before failing); session-scoped events fall back to the default membership; refresh rotation stays in `sessions` (documented)
+- ✅ (2026-10-19) **`GET /v1/audit-events`** (API_CONTRACTS row pre-existing): admin-only via `RolesGuard` + `@RequireRoles('owner','admin')` (the roles holding `audit.view`), tenant from verified JWT `tid`, query validation (cursor `ISO|uuid`, limit 1–100 default 50, enum/uuid/ISO filters → `validation_failed`), response `{ events[], next_cursor }`
+- ✅ (2026-10-19) **Gate-A/B tests** `src/audit/audit.integration.spec.ts` ×11 **as the app role** + `audit.controller.spec.ts` ×6: cross-tenant list isolation, WITH CHECK forge rejection, **UPDATE/DELETE denied (append-only)**, login/switch/logout/reuse emission incl. denied-probe row + success-in-target-only, keyset walk (7 rows exactly once, newest first), filter composition, `record()` write-failure propagation
+- ✅ Fix found via live boot: `RolesGuard` needs `TenancyService` → `AuditModule` imports `TenancyModule` (unit tests don't wire modules — boot smoke caught it)
+- ✅ Live HTTP smoke extended: admin `GET /v1/audit-events` → 200 with the `auth.login` event (ip/ua metadata), bad cursor → 400, bad limit → 400, no token → 401; full auth chain re-verified (429@5, reuse 401, switch-foreign 403)
+
 ## Tests run
 - Infra verification matrix 2026-10-16: **ALL CHECKS PASSED** (twice: post-install + post stop/start cycle). S3 signed round-trip: 5/5.
 - App tests 2026-10-16 (scaffold): **vitest 4/4** + typecheck 3/3 + build 3/3; API `/health` live check → 200; worker heartbeat boot check.
@@ -85,6 +95,7 @@ Last updated: 2026-10-19
 - App tests 2026-10-16 (tenancy+RBAC): **workspace vitest 50/50 across 12 files — 6/6 turbo tasks green** (api 47 incl. 10 DB-integration incl. Gate-A cross-tenant negatives, worker 2, shared 1) + typecheck/build green; live HTTP smoke all expected codes incl. `/v1/tenants/mine` (401/200) and cross-tenant `switch-tenant` → **403 permission_denied**.
 - Infra verification matrix 2026-10-19 (post-RLS role split): **ALL CHECKS PASSED** — `app-role login: aicsp_app@ai_csp`, pg_dump 55.8 KB, SeaweedFS S3 5/5 (after `-s3.port.iceberg=0` fix).
 - App tests 2026-10-19 (case/message + RLS): **workspace vitest 57/57 across 13 files — 6/6 turbo tasks green** (api 54 incl. 7 RLS-enforcement DB tests as the app role + auth/tenancy 10 DB-integration, worker 2, shared 1) + typecheck/build green; live HTTP smoke all expected codes (health 200, login 200, `/v1/tenants/mine` 401/200, switch-foreign 403, refresh rotation, reuse 401, logout chain, **429@5**) with the API running as `aicsp_app`.
+- App tests 2026-10-19 (audit log): **workspace vitest 74/74 across 15 files — 6/6 turbo tasks green** (api 71 incl. 11 audit DB-integration as the app role + 6 controller unit + prior suites, worker 2, shared 1) + typecheck/build green; live HTTP smoke extended (audit list 200 with `auth.login` event, bad cursor/limit 400, no token 401) — full auth chain re-verified.
 - DOCX extraction: 5/5. Git ignore rules: `.env` ignored, `.env.example` trackable.
 
 ## Current blockers
@@ -104,9 +115,9 @@ See `DECISIONS_PENDING.md` (relevant now: D-04…D-12 open as scheduled). D-15 c
 5. Timeline assumes ~20-person team — re-baseline for actual capacity after approval
 
 ## Next recommended task
-**Continue P2 Foundation** (scaffold ✅, auth ✅, tenancy+RBAC ✅, case/message schema + RLS ✅):
-1. **Audit log** (DATABASE_DESIGN audit section; append-only, tenant-scoped, `audit.view` permission) — then
-2. Then: outbox/queue (ADR-002) → observability — closing with **cross-tenant negative tests passing** (Gates A/B)
+**Continue P2 Foundation** (scaffold ✅, auth ✅, tenancy+RBAC ✅, case/message schema + RLS ✅, audit log ✅):
+1. **Outbox/queue** (ADR-002 transactional outbox + worker consumption) →
+2. Then: observability — closing with **cross-tenant negative tests passing** (Gates A/B)
 - ~~First git commit only with separate authorization (B-2)~~ → **DONE 2026-10-16**: root `6e903df` + doc-sync `6b1ca13` + auth `674248a` + push-record `7349dd4` + tenancy/RBAC `1de9898` — **all pushed to origin** (2×, each separately approved); routine commits pre-authorized, pushes gated (ADR-012 amendment)
 
 ## Resume commands

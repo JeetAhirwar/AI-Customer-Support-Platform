@@ -62,8 +62,10 @@ pick: *"jo tumhe sahi lage"* → node-pg-migrate).
   dance on `pg_hba.conf` (restored to scram + verified).
 - **Scope (refines "all tenant tables").** RLS is enabled on the tenant's
   **business data** — `customers`, `customer_identities`, `conversations`,
-  `cases`, `messages`, `case_events`, `handoffs`, `queues` — plus
-  `tenant_memberships`. **Not** RLS-protected: identity tables
+  `cases`, `messages`, `case_events`, `handoffs`, `queues`, and
+  `audit_events` (migration `005_audit`, which additionally revokes
+  `UPDATE/DELETE` from `aicsp_app` — the trail is INSERT-only for the app)
+  — plus `tenant_memberships`. **Not** RLS-protected: identity tables
   (`users`/`credentials`/`sessions`, global and keyed by uuid) and authz
   metadata (`tenants`/`roles`/`role_permissions`/`teams`) — login and the
   guard pipeline must read them across contexts by design (e.g. listing a
