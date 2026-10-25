@@ -126,7 +126,7 @@ Last updated: 2026-10-25
 - Future (scheduled): LLM key+cap (P3); email credentials (P4); telephony decision+number (P5); cloud account (P7); legal/consent policy (P5); segment decision (pilot); pgvector availability (P3)
 
 ## Decisions awaiting approval
-See `DECISIONS_PENDING.md` (relevant now: D-04…D-12 open as scheduled). D-15 confirmed 2026-10-16; commit policy amended 2026-10-16 (routine commits pre-authorized, pushes gated); **pushes executed: 2× on 2026-10-16 + 2× on 2026-10-19 (each separately approved)**.
+See `DECISIONS_PENDING.md` (relevant now: D-04…D-12 open as scheduled). D-15 confirmed 2026-10-16; commit policy amended 2026-10-16 (routine commits pre-authorized, pushes gated); **pushes executed: 2× on 2026-10-16 + 2× on 2026-10-19 + 1× on 2026-10-25 (observability `45e4f2e` + this record, approved by founder 2026-10-25)**.
 
 ## Known risks
 1. C: drive nearly full → Docker path blocked (mitigation: native services on E:)
