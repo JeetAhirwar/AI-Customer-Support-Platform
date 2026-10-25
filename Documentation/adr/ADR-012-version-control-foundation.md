@@ -23,4 +23,8 @@ The project had no version control. Controlled change history and repository hyg
 ## Amendment (2026-10-16, founder)
 - **First commit authorized and made:** root commit `6e903df` (55 files) after a clean sensitive-file audit; `origin` remote added per founder instruction (`https://github.com/JeetAhirwar/AI-Customer-Support-Platform.git`).
 - **Commit policy (founder: *"jo tumhe sahi lage"* → option b):** routine local commits are now **pre-authorized** with two standing conditions: (1) every commit passes a secrets audit (no `.env`, credentials, data, or binaries staged) and (2) tests/typecheck are green beforehand. **Every push to any remote still requires explicit founder approval**, as does adding further remotes.
-- gitleaks secret scanning in CI remains a Phase-2 Gate A item per the original decision above.
+- ~~gitleaks secret scanning in CI remains a Phase-2 Gate A item per the original decision above.~~
+  **Done 2026-10-25:** CI now runs `gitleaks git . --redact --exit-code 1` as a standalone
+  `secret-scan` job (v8.30.1 pinned, `fetch-depth: 0` so the *full* history is scanned — a secret
+  that was ever committed is still a leak). Verified locally first: **14 commits scanned, 0
+  findings**. Scope decision + full gate table: `TESTING_STRATEGY.md` §8.

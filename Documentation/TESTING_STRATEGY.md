@@ -87,20 +87,57 @@ to `never`, and a `capture()` return field typed as an array but returned as a f
 
 ## 8. Gate enforcement status (honest accounting)
 
-What Gate A/B actually enforce today — local results are recorded, CI is not yet a gate for all of it:
+What Gate A/B actually enforce today — CI is a real gate for every row except Lint:
 
 | Gate A/B requirement | Enforced per PR in CI? | Local |
 |---|---|---|
-| Unit tests | ✅ `pnpm test` | ✅ |
-| Type checks (src **+ specs**) | ✅ `pnpm typecheck` | ✅ |
-| Build | ✅ `pnpm build` | ✅ |
-| RLS suite + QA-005 negatives (Gates A/B) | ❌ no Postgres service in Actions — suites skip without `TEST_DATABASE_URL` | ✅ 149/149 |
-| Migration validation | ❌ | ✅ `db:migrate` run manually per slice |
-| Lint | ❌ **no ESLint config exists in the repo** | ❌ |
-| Secret scan (gitleaks — open ADR-012 item) | ❌ | ✅ manual pattern audit per commit |
-| Dependency scan (`pnpm audit`) | ❌ | ❌ |
+| Unit tests | ✅ job `build-test` → `pnpm test` | ✅ |
+| Type checks (src **+ specs**) | ✅ job `build-test` → `pnpm typecheck` | ✅ |
+| Build | ✅ job `build-test` → `pnpm build` | ✅ |
+| RLS suite + QA-005 negatives (Gates A/B) | ✅ `postgres:17` service → provision → migrate → 9 posture assertions → `pnpm test` | ✅ 149/149 |
+| Migration validation | ✅ own step: `db:migrate` runs as the **owner** role; a failing migration fails the job | ✅ `db:migrate` per slice |
+| Secret scan (gitleaks — ADR-012) | ✅ job `secret-scan`: v8.30.1 pinned, **full history** (`fetch-depth: 0`), `--redact` | ✅ 0 findings / 14 commits |
+| Dependency scan (`pnpm audit`) | ⚠️ job `dependency-scan`: **blocks on production critical**, all advisories printed non-blocking | ✅ baseline recorded below |
+| Lint | ❌ **no ESLint config exists in the repo** — a toolchain decision, not a CI wiring task | ❌ |
 
-Closing the ❌ column is a founder decision on CI scope (Postgres service container, gitleaks,
-`pnpm audit`, and/or adopting ESLint) — recorded in `PROGRESS_TRACKER.md` → *Next recommended
-task* #3. The suites themselves are done and green; only their per-PR enforcement is pending.
+### How the CI database gate works
+
+`build-test` boots an ephemeral `postgres:17` service with **trust auth on the job-local
+loopback port** — deliberately, so no credential is written into the workflow file for the secret
+scanner (which scans that very file) to find. Then it replays the local cluster's three steps:
+
+1. `Infrastructure/ci/provision-test-db.mjs` creates `aicsp` (owner — runs migrations, owns tables)
+   and `aicsp_app` (`NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`), the `ai_csp_test` database
+   and the ADR-003 `ALTER DEFAULT PRIVILEGES` grant — idempotent, and it never re-grants on existing
+   tables, so migrations 005/006's `REVOKE UPDATE, DELETE` on the append-only tables stays intact
+2. `pnpm --filter @aicsp/api db:migrate` applies 001→006 **as the owner**
+3. the same script re-runs with `--check-grants`: **9 assertions** (app role can SELECT/INSERT
+   business tables, has schema USAGE, cannot UPDATE/DELETE `audit_events` or `outbox_events`, RLS
+   enabled on `cases` and `audit_events`) — one named failure instead of seven suites dying with
+   `permission denied`
+4. `pnpm test`, where the DB suites now genuinely run per PR instead of skipping
+
+CI has **no repo-root `.env`**, so the two JWT secrets are generated per run
+(`openssl rand -hex 32`) and `turbo.json` → `test.env` declares them; turbo's strict env mode only
+forwards declared names.
+
+**Local proof (2026-10-25):** the entire sequence was replayed against a throwaway cluster
+(`initdb` → provision → migrate → `--check-grants` → `pnpm test`) using CI's exact env shape:
+**6/6 tasks, 149/149 tests green**. That run is what caught a real bug — `pg` lets a
+`connectionString`'s path override a `database` option, so the grants were silently landing in the
+*admin* database and every DB suite failed, exactly as CI would have failed on day one.
+
+### Dependency-scan threshold (policy lives here, not in the YAML)
+
+| Invocation | Behaviour |
+|---|---|
+| `audit-gate.mjs --fail-on critical` | **blocking** — 0 production criticals today |
+| `audit-gate.mjs --fail-on none --include-dev` | report-only — prints all 20 advisories (15 prod + 5 dev-only, incl. the 2 `vitest`/`tinypool` criticals) |
+
+pnpm's `--audit-level` only filters what is *printed*; it does not change the exit code, so it
+cannot express a gate. The threshold therefore lives in `Infrastructure/ci/audit-gate.mjs` where it
+is explicit and reviewable. Current production baseline: **15 advisories — 4 low / 7 moderate /
+4 high / 0 critical**, the highs being `fastify` plus transitive `fast-uri`. Raising the gate to
+`high` is a deliberate follow-up (upgrade fastify) and is **expected to fail until that lands** —
+the gate is set to the truth we have, not to a claim.
 

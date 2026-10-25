@@ -1,14 +1,51 @@
 name: CI
 
+# Gate A/B enforcement — TESTING_STRATEGY.md §3 (release gates) + §8 (what is enforced).
+#   Gate A  type checks (src + specs), build, unit tests, migration validation, RLS
+#           enforcement suite as the app role, secret scan, dependency scan
+#   Gate B  DB / outbox / permission integration suites — they need a real database,
+#           which is what the postgres service below exists for
+#
+# Three independent jobs, so a red test can never hide a leaked secret: secret-scan has
+# no dependency on install or build and runs standalone.
 on:
   push:
-    branches: [main]
+    branches: [master, main]
   pull_request:
 
 jobs:
   build-test:
+    name: Typecheck, build, tests (Gates A + B)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:17
+        # Ephemeral, job-local, loopback-only container. Trust auth is deliberate: no
+        # credential is written into this file, so the secret scanner scanning this very
+        # file has nothing to find. The security property under test is the ADR-003
+        # two-role model created by the provision step below (aicsp owns, aicsp_app is
+        # NOBYPASSRLS), not the container's auth method.
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      # CI has no repo-root .env, so config/env.ts must get its five required names from
+      # the environment — turbo's strict env mode only forwards what turbo.json declares
+      # under test.env, which is where these names are listed.
+      ADMIN_URL: postgres://postgres@127.0.0.1:5432/postgres
+      DATABASE_URL: postgres://aicsp_app@127.0.0.1:5432/ai_csp_test
+      MIGRATIONS_DATABASE_URL: postgres://aicsp@127.0.0.1:5432/ai_csp_test
+      TEST_DATABASE_URL: postgres://aicsp_app@127.0.0.1:5432/ai_csp_test
+      TEST_WORKER_DATABASE_URL: postgres://aicsp@127.0.0.1:5432/ai_csp_test
+      JWT_ACCESS_TTL: "900"
+      JWT_REFRESH_TTL: "86400"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -18,15 +55,71 @@ jobs:
         run: corepack enable
       - name: Install
         run: pnpm install --frozen-lockfile
-      - name: Typecheck
+      - name: Generate per-run JWT secrets (discarded with the job)
+        run: |
+          echo "JWT_ACCESS_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          echo "JWT_REFRESH_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+      - name: Provision roles + test database (ADR-003 two-role model)
+        run: >-
+          node Infrastructure/ci/provision-test-db.mjs
+          --admin-url "$ADMIN_URL"
+          --database ai_csp_test
+          --owner aicsp
+          --app-role aicsp_app
+      - name: Migrations as the owner role (node-pg-migrate)
+        run: pnpm --filter @aicsp/api db:migrate
+      - name: Assert grants + RLS posture (app role can read, audit trail is append-only)
+        run: >-
+          node Infrastructure/ci/provision-test-db.mjs
+          --admin-url "$ADMIN_URL"
+          --database ai_csp_test
+          --owner aicsp
+          --app-role aicsp_app
+          --check-grants
+      - name: Typecheck (src + specs)
         run: pnpm typecheck
       - name: Build
         run: pnpm build
-      - name: Unit tests
+      - name: Tests (unit + DB integration)
         run: pnpm test
-      # Gate A/B gap (TESTING_STRATEGY.md §8): the DB-backed suites
-      # (rls.integration, security/cross-tenant.integration, audit/outbox/
-      # tenancy/observability integration, worker dispatcher) SKIP here because
-      # there is no Postgres service — they need migrations + TEST_DATABASE_URL.
-      # Lint / gitleaks / pnpm audit are also not wired yet. CI scope decision
-      # pending with the founder (PROGRESS_TRACKER.md → Next recommended task #3).
+
+  secret-scan:
+    name: Secret scan (gitleaks, ADR-012)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: "8.30.1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # full history: a secret that was committed once, even if later removed,
+          # is still a leak (ADR-012)
+          fetch-depth: 0
+      - name: Install gitleaks
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o /tmp/gitleaks.tar.gz
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          /tmp/gitleaks version
+      - name: Scan git history for secrets
+        run: /tmp/gitleaks git . --redact --no-banner --exit-code 1
+
+  dependency-scan:
+    name: Dependency scan (pnpm audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Enable pnpm (corepack)
+        run: corepack enable
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      # Gate A blocks on production CRITICALS today; every advisory (incl. dev) is still
+      # printed below. Threshold policy + the current baseline are recorded in
+      # TESTING_STRATEGY.md §8 — tighten it there, not ad hoc here.
+      - name: Audit gate (production, block on critical)
+        run: node Infrastructure/ci/audit-gate.mjs --fail-on critical
+      - name: Full advisory report (visible, non-blocking)
+        run: node Infrastructure/ci/audit-gate.mjs --fail-on none --include-dev
