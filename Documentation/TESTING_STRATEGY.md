@@ -115,7 +115,31 @@ scanner (which scans that very file) to find. Then it replays the local cluster'
    business tables, has schema USAGE, cannot UPDATE/DELETE `audit_events` or `outbox_events`, RLS
    enabled on `cases` and `audit_events`) — one named failure instead of seven suites dying with
    `permission denied`
-4. `pnpm test`, where the DB suites now genuinely run per PR instead of skipping
+4. `pnpm test`, where the DB suites now genuinely run per PR instead of skipping — and a final
+   step **fails the job if any suite skipped** (see the guard below)
+
+### The hollow-gate guard (why "no skips" is a hard failure)
+
+Every DB suite is written as `describe.skipIf(!testDbUrl)` — a *missing* database is a **skip**,
+not a failure. Reproduced by removing the variable from the environment: the run exits **0** while
+73 api tests and 6 worker tests report as skipped. A green run on its own therefore proves
+nothing about the DB suites, and this exact silent skip has already happened once (turbo's strict
+env mode dropped the variable).
+
+So CI does not trust a green vitest exit code:
+
+- the **Tests** step writes output to a file rather than piping it, so the step's exit code is
+  vitest's and not the shell's (the default `run` shell is `bash -e` *without* `pipefail`)
+- a separate **Gate: no suite may silently skip** step then fails the job if `TEST_DATABASE_URL`
+  is unset, or if `N skipped` appears anywhere in the summaries, printing the offending lines
+
+Validated against real captured output (the script extracted verbatim from `ci.yml` and run under
+bash): a full run passes; a run with the variable removed fails and lists the eight skipped suites;
+an absent variable fails first with its own message. The guard also makes the run self-verifying
+without log access: **a job log that can't be read still leaves a conclusion anyone can inspect.**
+
+Consequence, deliberate: **a test skipped in CI fails CI.** If a skip is ever genuinely
+intentional it must be an explicit decision, made by changing this gate alongside it.
 
 CI has **no repo-root `.env`**, so the two JWT secrets are generated per run
 (`openssl rand -hex 32`) and `turbo.json` → `test.env` declares them; turbo's strict env mode only

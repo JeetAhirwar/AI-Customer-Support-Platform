@@ -83,7 +83,33 @@ jobs:
       - name: Build
         run: pnpm build
       - name: Tests (unit + DB integration)
-        run: pnpm test
+        # log captured to a file (not a pipe) so the step's exit code is vitest's,
+        # not tee's — the default `run` shell here is bash -e without pipefail
+        run: |
+          pnpm test > "$RUNNER_TEMP/vitest.log" 2>&1 || rc=$?
+          cat "$RUNNER_TEMP/vitest.log"
+          exit ${rc:-0}
+      - name: "Gate: no suite may silently skip (a skip means the database never arrived)"
+        # The integration suites guard themselves with describe.skipIf(!testDbUrl):
+        # if TEST_DATABASE_URL ever stops reaching vitest they SKIP instead of
+        # failing, and the job would go green without running a single DB test.
+        # That exact silent-skip already happened once (turbo strict env mode) — so
+        # a green run with skips is treated as a failure here (TESTING_STRATEGY §8).
+        run: |
+          if [ -z "${TEST_DATABASE_URL:-}" ]; then
+            echo "::error::TEST_DATABASE_URL is not set in the test environment — every DB suite would skip."
+            exit 1
+          fi
+          sed -e 's/\x1b\[[0-9;]*m//g' "$RUNNER_TEMP/vitest.log" > "$RUNNER_TEMP/vitest.clean.log"
+          echo "--- suite summaries ---"
+          grep -E 'Tests[[:space:]]+[0-9]+ passed' "$RUNNER_TEMP/vitest.clean.log" || true
+          skipped=$(grep -nE '[0-9]+ skipped' "$RUNNER_TEMP/vitest.clean.log" || true)
+          if [ -n "$skipped" ]; then
+            echo "$skipped"
+            echo "::error::Skipped tests in CI — integration suites skip when TEST_DATABASE_URL is missing or does not reach vitest. A green run with skips is a hollow gate."
+            exit 1
+          fi
+          echo "OK: no suites skipped — the DB integration tests executed"
 
   secret-scan:
     name: Secret scan (gitleaks, ADR-012)
