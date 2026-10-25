@@ -9,7 +9,7 @@
 | ADR-005 | Vector retrieval store (pgvector benchmark) | 📋 Planned (Phase 3) |
 | ADR-006 | Telephony/voice architecture and provider | 📋 Deferred to Phase 5 (D-06 open) |
 | ADR-007 | Email provider strategy | 📋 Deferred to Phase 4 (D-05 open) |
-| ADR-008 | Observability and log/trace retention | 📋 Planned (Phase 2 start, evolve) |
+| [ADR-008](ADR-008-observability-logs-metrics.md) | Observability — pino structured logs, correlation context, Prometheus metrics, staged OpenTelemetry | ✅ ACCEPTED (2026-10-19; **executed + verified 2026-10-25** — shared logger builder, ALS correlation, `/metrics` baseline; execution note in ADR) |
 | ADR-009 | AI autonomy rollout policy (ladder + kill switch) | 📋 Planned (Phase 3–6) |
 | [ADR-010](ADR-010-modular-monolith-extraction-path.md) | Architecture style — modular monolith with extraction path | ✅ Accepted 2026-10-16 |
 | [ADR-011](ADR-011-local-dev-native-windows.md) | Local dev infrastructure — Windows-native services on E: (conditional) | ✅ Accepted 2026-10-16 |

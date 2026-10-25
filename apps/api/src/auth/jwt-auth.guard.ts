@@ -8,10 +8,13 @@ import type { FastifyRequest } from 'fastify';
 import { AppException } from '../common/errors';
 import { PUBLIC_KEY } from '../common/public.decorator';
 import { verifyAccessToken, type AccessTokenClaims } from '../auth/tokens';
+import { setCorrelationContext } from '../observability/correlation';
 
 /**
  * Global authentication guard: every route requires a valid Bearer JWT unless
- * explicitly marked @Public(). Attaches verified claims to `request.user`.
+ * explicitly marked @Public(). Attaches verified claims to `request.user`
+ * and (telemetry only — ADR-008 §2) enriches the correlation context so log
+ * lines carry tenant_id/user_id. Never used for authorization decisions.
  */
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
@@ -48,6 +51,7 @@ export class JwtAuthGuard implements CanActivate {
     }
 
     request.user = claims;
+    setCorrelationContext({ tenantId: claims.tid, userId: claims.sub });
     return true;
   }
 }

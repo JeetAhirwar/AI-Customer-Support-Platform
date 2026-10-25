@@ -51,3 +51,20 @@ QA-001 grounded FAQ → AI eval suite · QA-002 unknown question → eval (refus
 3. Flaky tests are fixed or quarantined with an owner — never silently ignored.
 4. Fixing a regression includes a regression test.
 5. Mocks (email/voice/AI) are explicitly labeled `mock-*` and are never represented as production integrations (Definition of Done, Master Prompt §22).
+
+## 6. Test runtime note — Nest DI needs decorator metadata (ADR-008)
+
+Vitest transforms TypeScript with **esbuild**, which cannot emit `emitDecoratorMetadata`.
+Without `design:paramtypes`, Nest instantiates every `@Injectable()`/controller with **no
+constructor arguments** — `this.reflector`, `this.service`, … are all `undefined` and any
+full-app test fails with confusing 500s (`Cannot read properties of undefined (reading
+'getAllAndOverride')`). This was invisible until ADR-008's Gate-B tests were the first to
+boot the real `AppModule`; earlier suites constructed services/guards directly.
+
+- Fix: `apps/api/vitest.config.ts` runs **SWC** (`unplugin-swc` + `@swc/core`,
+  `jsc.transform.decoratorMetadata: true`) so tests exercise the real DI graph.
+- Consequence: any test that boots Nest (integration/E2E through `NestFactory.create`)
+  **must** run under this config — a spec that bypasses it will look like an app bug.
+- `@swc/core` is on the `allowBuilds` allowlist in `pnpm-workspace.yaml` (pnpm blocks
+  postinstalls by default; the script is swc's standard optional-binary check).
+

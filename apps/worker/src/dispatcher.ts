@@ -1,4 +1,6 @@
 import type { Pool } from 'pg';
+import type { Logger } from 'pino';
+import { createWorkerLogger } from './logger';
 
 /**
  * Outbox dispatcher (ADR-002) — drains `outbox_events` from Postgres.
@@ -40,9 +42,11 @@ export interface DispatcherOptions {
   maxBackoffMs: number;
   /** injectable for deterministic tests; returns [0,1) */
   jitter: () => number;
+  /** structured JSON logger (ADR-008); defaults to the shared worker logger */
+  logger: Logger;
 }
 
-const DEFAULTS: DispatcherOptions = {
+const DEFAULTS: Omit<DispatcherOptions, 'logger'> = {
   batchSize: 10,
   maxAttempts: 5,
   baseBackoffMs: 1_000,
@@ -68,7 +72,8 @@ interface ClaimedRow {
 }
 
 export class OutboxDispatcher {
-  private readonly opts: DispatcherOptions;
+  private readonly opts: Omit<DispatcherOptions, 'logger'>;
+  private readonly logger: Logger;
   private ticking = false;
 
   constructor(
@@ -76,7 +81,9 @@ export class OutboxDispatcher {
     private readonly handlers: ReadonlyMap<string, OutboxHandler>,
     opts?: Partial<DispatcherOptions>,
   ) {
-    this.opts = { ...DEFAULTS, ...opts };
+    const { logger, ...rest } = opts ?? {};
+    this.opts = { ...DEFAULTS, ...rest };
+    this.logger = logger ?? createWorkerLogger();
   }
 
   /** Event types this dispatcher can drain (claim filter). */
@@ -153,9 +160,16 @@ export class OutboxDispatcher {
         } catch (err) {
           if (event.attempts >= this.opts.maxAttempts) {
             // DLQ: terminal — logged loudly, alert-ready (never silent)
-            console.error(
-              `[outbox] DEAD (DLQ) id=${event.id} type=${event.type} ` +
-                `tenant=${event.tenantId} attempts=${event.attempts}: ${String(err)}`,
+            this.logger.error(
+              {
+                outbox_event_id: event.id,
+                event_type: event.type,
+                tenant_id: event.tenantId,
+                attempts: event.attempts,
+                correlation_id: event.correlationId,
+                err,
+              },
+              'outbox event dead (DLQ) - operator action required',
             );
             await client.query(
               `UPDATE outbox_events SET state = 'dead' WHERE id = $1`,
@@ -192,27 +206,27 @@ export interface DispatcherRuntime {
   stop(): void;
 }
 
-/**
- * Poll loop on top of tick(). Overlapping ticks are skipped (backpressure),
- * so a slow handler degrades to sequential batches, never a pile-up.
+/** Poll loop on top of tick(): overlapping ticks are skipped (backpressure),
+ *  so a slow handler degrades to sequential batches, never a pile-up.
+ *  Errors route to onError (default: structured error line, ADR-008).
  */
 export function startDispatcherLoop(
   dispatcher: OutboxDispatcher,
   pollMs: number,
   onError?: (err: unknown) => void,
+  logger?: Logger,
 ): DispatcherRuntime {
+  const log = logger ?? createWorkerLogger();
   const timer = setInterval(() => {
     void dispatcher
       .tick()
-      .catch((err) => (onError ?? defaultOnError)(err));
+      .catch((err) =>
+        onError ? onError(err) : log.error({ err }, 'outbox tick failed'),
+      );
   }, pollMs);
   return {
     stop(): void {
       clearInterval(timer);
     },
   };
-}
-
-function defaultOnError(err: unknown): void {
-  console.error(`[outbox] tick failed: ${String(err)}`);
 }

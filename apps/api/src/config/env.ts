@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { resolveLogLevel, type LogLevel } from '@aicsp/shared';
 
 /**
  * Startup configuration (contract: Documentation/ENVIRONMENT_VARIABLES.md).
@@ -10,6 +11,8 @@ export interface AppConfig {
   nodeEnv: string;
   apiPort: number;
   apiHost: string;
+  /** pino level (ADR-008 §1; validated via LOG_LEVEL, default info) */
+  logLevel: LogLevel;
   databaseUrl: string;
   databasePoolMax: number;
   jwtAccessSecret: string;
@@ -87,6 +90,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     nodeEnv: env.NODE_ENV ?? 'development',
     apiPort: Number(env.API_PORT ?? 3000),
     apiHost: env.API_HOST ?? '127.0.0.1',
+    logLevel: resolveLogLevel(env.LOG_LEVEL),
     databaseUrl: env.DATABASE_URL!,
     databasePoolMax:
       Number.isFinite(Number(env.DATABASE_POOL_MAX)) && env.DATABASE_POOL_MAX

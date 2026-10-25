@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { withTenant } from '../db/tenant-scope';
+import { getCorrelationId } from '../observability/correlation';
 
 /**
  * Audit trail (SERVICE_BOUNDARIES §10 audit — leaf module; depends on nothing).
@@ -76,6 +77,8 @@ export class AuditService {
    * insert fails — callers propagate (SECURITY.md §8 no-silent-gap rule).
    */
   async record(event: AuditEventInput): Promise<void> {
+    // correlation defaults from the request context (ADR-008 §2) — one id
+    // threads logs + audit + envelope; explicit parameter still wins.
     await withTenant(event.tenantId, (client) =>
       client.query(
         `INSERT INTO audit_events
@@ -90,7 +93,7 @@ export class AuditService {
           event.targetType ?? null,
           event.targetId ?? null,
           event.outcome,
-          event.correlationId ?? null,
+          event.correlationId ?? getCorrelationId() ?? null,
           JSON.stringify(event.metadata ?? {}),
         ],
       ),

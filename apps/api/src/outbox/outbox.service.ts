@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { ScopeClient } from '../db/tenant-scope';
+import { getCorrelationId } from '../observability/correlation';
 
 /**
  * Transactional outbox (ADR-002, DATABASE_DESIGN §5) — the durability source
@@ -33,6 +34,8 @@ export class OutboxService {
    * Returns the generated event id (the at-least-once dedup key for handlers).
    */
   async append(client: ScopeClient, event: OutboxAppendInput): Promise<string> {
+    // correlation defaults from the request context (ADR-008 §2) — events
+    // threaded back to the HTTP request that caused them, for free.
     const res = await client.query<{ id: string }>(
       `INSERT INTO outbox_events
          (tenant_id, type, schema_version, payload_ref, correlation_id)
@@ -43,7 +46,7 @@ export class OutboxService {
         event.type,
         event.schemaVersion ?? 1,
         event.payloadRef ?? null,
-        event.correlationId ?? null,
+        event.correlationId ?? getCorrelationId() ?? null,
       ],
     );
     return res.rows[0]!.id;

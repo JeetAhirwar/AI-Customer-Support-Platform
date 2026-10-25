@@ -59,4 +59,28 @@ describe('loadConfig (fail-fast contract)', () => {
     expect(cfg.jwtRefreshTtlSec).toBe(2_592_000);
     expect(cfg.apiPort).toBe(4000);
   });
+
+  it('LOG_LEVEL: defaults to info, accepts valid levels, fails fast naming the variable', () => {
+    const base = {
+      DATABASE_URL: 'postgres://example/test',
+      JWT_ACCESS_SECRET: 'a'.repeat(32),
+      JWT_REFRESH_SECRET: 'b'.repeat(32),
+      JWT_ACCESS_TTL: '15m',
+      JWT_REFRESH_TTL: '30d',
+    } as NodeJS.ProcessEnv;
+
+    expect(loadConfig(base).logLevel).toBe('info');
+    expect(loadConfig({ ...base, LOG_LEVEL: 'debug' }).logLevel).toBe('debug');
+    expect(loadConfig({ ...base, LOG_LEVEL: 'WARN' }).logLevel).toBe('warn');
+
+    let message = '';
+    try {
+      loadConfig({ ...base, LOG_LEVEL: 'very-loud' } as NodeJS.ProcessEnv);
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toContain('LOG_LEVEL');
+    expect(message).toContain('expected one of');
+    expect(message).not.toContain('very-loud'); // configured value never echoed
+  });
 });

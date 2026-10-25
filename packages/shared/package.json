@@ -2,7 +2,7 @@
   "name": "@aicsp/shared",
   "version": "0.1.0",
   "private": true,
-  "description": "Shared types and constants across API, worker and web (no runtime deps)",
+  "description": "Shared types, constants and log options across API, worker and web (pino only runtime dep)",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
@@ -10,7 +10,9 @@
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
-  "dependencies": {},
+  "dependencies": {
+    "pino": "^10.4.0"
+  },
   "devDependencies": {
     "typescript": "^5.9.0",
     "vitest": "^3.0.0"

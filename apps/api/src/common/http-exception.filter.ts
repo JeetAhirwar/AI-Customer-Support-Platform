@@ -6,13 +6,18 @@ import {
   Logger,
 } from '@nestjs/common';
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { randomUUID } from 'crypto';
 import { AppException, codeForStatus, type ErrorCode } from './errors';
+import {
+  getCorrelationId,
+  sanitizeCorrelationId,
+} from '../observability/correlation';
 
 /**
  * Global exception filter: renders every error as the API_CONTRACTS envelope
- * { error: { code, message, correlation_id, details? } }. 5xx is logged
- * server-side with the correlation id; the client never sees stacks/secrets.
+ * { error: { code, message, correlation_id, details? } }. The correlation id
+ * is THE request id (context first, sanitized header as fallback — ADR-008
+ * §2), the same one on the response header and in the logs. 5xx is logged
+ * server-side; the client never sees stacks/secrets.
  */
 @Catch()
 export class ErrorEnvelopeFilter implements ExceptionFilter {
@@ -23,11 +28,9 @@ export class ErrorEnvelopeFilter implements ExceptionFilter {
     const request = http.getRequest<FastifyRequest>();
     const reply = http.getResponse<FastifyReply>();
 
-    const rawCorrelation = request.headers?.['x-correlation-id'];
     const correlationId =
-      typeof rawCorrelation === 'string' && rawCorrelation.trim() !== ''
-        ? rawCorrelation.trim().slice(0, 128)
-        : randomUUID();
+      getCorrelationId() ??
+      sanitizeCorrelationId(request.headers?.['x-correlation-id']);
 
     let status = 500;
     let code: ErrorCode = 'internal_error';

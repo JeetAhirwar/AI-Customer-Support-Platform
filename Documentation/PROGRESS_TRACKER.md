@@ -1,8 +1,8 @@
 # PROGRESS TRACKER
 ## AI Customer Support Platform
 
-**Current phase: Phase 2 (Foundation) — IN PROGRESS · infra ✅ + scaffold ✅ + auth ✅ + tenancy/RBAC ✅ + case/message schema + RLS ✅ + audit log ✅ + outbox/queue ✅ (2026-10-19) · next: observability**
-Last updated: 2026-10-19
+**Current phase: Phase 2 (Foundation) — IN PROGRESS · infra ✅ + scaffold ✅ + auth ✅ + tenancy/RBAC ✅ + case/message schema + RLS ✅ + audit log ✅ + outbox/queue ✅ + observability ✅ (2026-10-25) · next: Gate-A/B cross-tenant negative tests to close P2**
+Last updated: 2026-10-25
 
 ## Status board
 
@@ -10,7 +10,7 @@ Last updated: 2026-10-19
 |---|---|---|
 | P0 Discovery | Read 5 DOCX docs, inspect environment, discovery report | **COMPLETED** (2026-10-15) |
 | P1 Architecture & stack approval | ADRs, service boundaries, security model, API contracts; stack approval | **COMPLETED** (2026-10-16): founder approved D-01=A', D-02=TypeScript+NestJS/Fastify, D-03=native/E:, D-07=yes, D-13=chat-first + D-14=claymorphism; final ADRs 001/010–014 issued; full Phase-1 doc set written |
-| P2 Foundation | Git/CI, auth, tenants, RBAC, case/message schema, audit, outbox/queue, observability | **IN PROGRESS** — infra ✅; scaffold ✅; **auth ✅; tenancy+RBAC ✅ (2026-10-16); case/message schema + RLS ✅ (2026-10-19); audit log ✅ (2026-10-19); outbox/queue ✅ (2026-10-19)**; observability next |
+| P2 Foundation | Git/CI, auth, tenants, RBAC, case/message schema, audit, outbox/queue, observability | **IN PROGRESS** — infra ✅; scaffold ✅; **auth ✅; tenancy+RBAC ✅ (2026-10-16); case/message schema + RLS ✅ (2026-10-19); audit log ✅ (2026-10-19); outbox/queue ✅ (2026-10-19); observability ✅ (2026-10-25)**; next: Gate-A/B cross-tenant negative tests (release gate) |
 | P3 Chat vertical slice | Widget, chat adapter, knowledge ingestion + RAG, grounded AI, handoff, agent workspace | NOT STARTED |
 | P4 Email | Inbound/outbound, threading, dedup, delivery states, bounce, attachments | NOT STARTED |
 | P5 Inbound voice | Mock first; then provider, speech pipeline, transfer, consent, fallback | NOT STARTED |
@@ -97,6 +97,16 @@ Last updated: 2026-10-19
 - ✅ (2026-10-19) **Gate-B tests ×17**: API `outbox.integration.spec.ts` ×5 as the app role — **atomicity (rolled-back append disappears)**, cross-tenant isolation + WITH CHECK forge, append-only (UPDATE/DELETE denied), no-scope fail-closed; worker `dispatcher.integration.spec.ts` ×6 as the owner role — publish path with envelope round-trip, retry→backoff→DLQ chain (`next_attempt_at` ≈ now+base), **SKIP LOCKED under two concurrent dispatchers (exactly-once claims)**, unhandled types left pending, cross-tenant drain, re-claim after finalize loss; worker `dispatcher.spec.ts` ×4 — backoff math (exponential/cap/jitter bound), empty-registry no-op, claim-filter surface, poll-loop wiring + onError
 - ✅ Verified: worker boot (missing var → exit 1 naming it; with var → `[worker] started (outbox dispatcher, poll=1000ms, types=0)`); API unchanged paths re-smoked
 
+## Completed tasks (P2 — observability, ADR-008)
+- ✅ (2026-10-25) **ADR-008 accepted + executed** (pino JSON logs, correlation context, Prometheus baseline, staged OpenTelemetry): one log stream threading ingress → logs → error envelope → audit → outbox → worker, exactly the `X-Correlation-ID` contract in API_CONTRACTS §1/§3
+- ✅ **Shared options builder** `packages/shared/src/logger.ts`: `LOG_LEVELS` + `resolveLogLevel()` (fail-fast naming `LOG_LEVEL` only, never echoes the bad value) + `REDACT_PATHS` (password/authorization/cookie/token/secret/api_key, headers + body) + `buildPinoOptions({ level, service, mixin })` — api and worker can't drift because there is one builder; transport = **stdout only** (rotation/retention deferred to D-06 per SECURITY §7)
+- ✅ **Correlation = AsyncLocalStorage** `src/observability/correlation.ts` + middleware: inbound `X-Correlation-ID` accepted only if `^[A-Za-z0-9._:\-]{1,128}$` (blocks CRLF/header injection, else fresh uuid), echoed in the response header, whole request runs inside the store; pino `mixin` enriches every line with `correlation_id` (+ `tenant_id`/`user_id` after JWT verification) — no call-site plumbing; `AuditService`/`OutboxService` default `correlationId ?? getCorrelationId()`; context is **telemetry only**, never authorization (ADR-003 owns authz)
+- ✅ **Metrics** `src/observability/metrics.ts`: `prom-client` registry + `http_requests_total` / `http_request_duration_seconds` labelled with **route templates only** (bounded cardinality, no ids), default process metrics, global interceptor records success + error paths, `GET /metrics` `@Public()` (unauthenticated in P2, loopback; **gate recorded before any cloud exposure** — D-06); `/metrics` excluded from its own counter
+- ✅ **Wiring**: `main.ts` builds one pino instance for Fastify request logs + `PinoLoggerService` for Nest boot logs; error-envelope filter → `APP_FILTER`, correlation middleware → `forRoutes('*')`, metrics interceptor → `APP_INTERCEPTOR`, all in `AppModule` (single path for prod and test boots); `LOG_LEVEL` validated into `AppConfig`; worker heartbeat/DLQ logs are the same builder with `service:"worker"`
+- ✅ **Test-infra fix this slice exposed** (TESTING_STRATEGY §6): vitest's esbuild transform cannot emit `emitDecoratorMetadata`, so Nest constructor DI resolved every dependency to `undefined` in tests — the first full-`AppModule` boot 500'd (`JwtAuthGuard.reflector` undefined). Fixed with `apps/api/vitest.config.ts` running **SWC** (`unplugin-swc` + `@swc/core`, `@swc/core` added to the `allowBuilds` allowlist); earlier suites never booted the app, so this was invisible until now
+- ✅ **Tests**: shared logger ×6 (fail-fast naming, redaction paths, level resolution), `correlation.spec` ×6 (sanitize/mint/echo/context mutation guard), `metrics.spec` ×7 (route-template labels, self-exclusion, histogram), `env.spec` +1 (`LOG_LEVEL` contract), **Gate-B `observability.integration.spec` ×7 booting the real `AppModule`** (mint/echo/sanitize id, envelope id === header id, audit rows carrying the login's id, Prometheus text + bounded labels)
+- ✅ Verified: **vitest 116/116 across 22 files, 6/6 turbo tasks** (typecheck/build green); live smoke — 36/36 log lines valid JSON, **zero secret leakage** (login password absent from logs), `correlation_id` on request logs, `/metrics` `route="/health"` present + no self-count, 401 envelope id === response header, worker JSON boot line
+
 ## Tests run
 - Infra verification matrix 2026-10-16: **ALL CHECKS PASSED** (twice: post-install + post stop/start cycle). S3 signed round-trip: 5/5.
 - App tests 2026-10-16 (scaffold): **vitest 4/4** + typecheck 3/3 + build 3/3; API `/health` live check → 200; worker heartbeat boot check.
@@ -106,6 +116,7 @@ Last updated: 2026-10-19
 - App tests 2026-10-19 (case/message + RLS): **workspace vitest 57/57 across 13 files — 6/6 turbo tasks green** (api 54 incl. 7 RLS-enforcement DB tests as the app role + auth/tenancy 10 DB-integration, worker 2, shared 1) + typecheck/build green; live HTTP smoke all expected codes (health 200, login 200, `/v1/tenants/mine` 401/200, switch-foreign 403, refresh rotation, reuse 401, logout chain, **429@5**) with the API running as `aicsp_app`.
 - App tests 2026-10-19 (audit log): **workspace vitest 74/74 across 15 files — 6/6 turbo tasks green** (api 71 incl. 11 audit DB-integration as the app role + 6 controller unit + prior suites, worker 2, shared 1) + typecheck/build green; live HTTP smoke extended (audit list 200 with `auth.login` event, bad cursor/limit 400, no token 401) — full auth chain re-verified.
 - App tests 2026-10-19 (outbox/queue): **workspace vitest 89/89 across 17 files — 6/6 turbo tasks green** (api 76 incl. 5 outbox Gate-B DB tests as the app role, worker 12 incl. 6 dispatcher integration as the owner role + 4 unit, shared 1) + typecheck/build green; worker boot verified both paths (fail-fast without `WORKER_DATABASE_URL`, dispatcher idle with it). Redis not required for this slice (BullMQ deferred per ADR-002 §7).
+- App tests 2026-10-25 (observability): **workspace vitest 116/116 across 22 files — 6/6 turbo tasks green** (api 97 incl. 7 real-`AppModule` Gate-B tests + 6 correlation + 7 metrics + `LOG_LEVEL` config, worker 12, shared 7) + typecheck/build green; DB integration actually running this time (`$env:TEST_DATABASE_URL` from `.env`). Live smoke: all-JSON logs, no secret leakage, correlation thread header → envelope → audit → logs, `/metrics` bounded labels. **One `dispatcher.integration.spec` failure observed in 1 of 3 full-suite runs under parallel load** (passed on re-run 8/8 since: 2 full-suite + 5× standalone + 1 full) — timing-sensitive DLQ assertion, **owner: worker slice, to be hardened before the P2 close-out** (TESTING_STRATEGY §5.3, not ignored).
 - DOCX extraction: 5/5. Git ignore rules: `.env` ignored, `.env.example` trackable.
 
 ## Current blockers
@@ -125,9 +136,9 @@ See `DECISIONS_PENDING.md` (relevant now: D-04…D-12 open as scheduled). D-15 c
 5. Timeline assumes ~20-person team — re-baseline for actual capacity after approval
 
 ## Next recommended task
-**Continue P2 Foundation** (scaffold ✅, auth ✅, tenancy+RBAC ✅, case/message schema + RLS ✅, audit log ✅, outbox/queue ✅):
-1. **Observability** (structured logs + correlation propagation + health/metrics baselines, ENVIRONMENT_VARIABLES `OTEL_*` ready) — then
-2. Close P2 with **cross-tenant negative tests passing** (Gates A/B) as the release gate; producer wiring (`case.created` etc.) starts with the cases API (P3)
+**Continue P2 Foundation** (scaffold ✅, auth ✅, tenancy+RBAC ✅, case/message schema + RLS ✅, audit log ✅, outbox/queue ✅, observability ✅):
+1. ~~Observability~~ → **DONE 2026-10-25** (ADR-008 executed; logs + correlation + `/metrics` baseline, `OTEL_*` still staged)
+2. Close P2 with **cross-tenant negative tests passing** (Gates A/B) as the release gate — incl. the flaky `dispatcher.integration` timing assertion noted under *Tests run*; producer wiring (`case.created` etc.) starts with the cases API (P3)
 - ~~First git commit only with separate authorization (B-2)~~ → **DONE 2026-10-16**: root `6e903df` + doc-sync `6b1ca13` + auth `674248a` + push-record `7349dd4` + tenancy/RBAC `1de9898` — **all pushed to origin** (2×, each separately approved); routine commits pre-authorized, pushes gated (ADR-012 amendment)
 
 ## Resume commands
