@@ -4,6 +4,7 @@ import { AuditModule } from './audit/audit.module';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
 import { AuthModule } from './auth/auth.module';
 import { ErrorEnvelopeFilter } from './common/http-exception.filter';
+import { CasesModule } from './cases/cases.module';
 import { HealthController } from './health.controller';
 import { CorrelationMiddleware } from './observability/correlation.middleware';
 import { MetricsInterceptor } from './observability/metrics';
@@ -13,9 +14,8 @@ import { TenancyModule } from './tenancy/tenancy.module';
 
 /**
  * Root application module.
- * Modules (auth, tenancy, audit, outbox, cases, ...) are added here as they
- * are built; see Documentation/SERVICE_BOUNDARIES.md for the target module
- * catalog.
+ * Modules (auth, tenancy, audit, outbox, cases, ...) — see
+ * Documentation/SERVICE_BOUNDARIES.md for the target module catalog.
  * Cross-cutting wiring (ADR-008): correlation middleware for every request,
  * uniform error envelope filter, http metrics interceptor.
  */
@@ -25,6 +25,7 @@ import { TenancyModule } from './tenancy/tenancy.module';
     TenancyModule,
     AuditModule,
     OutboxModule,
+    CasesModule,
     MetricsModule,
   ],
   controllers: [HealthController],

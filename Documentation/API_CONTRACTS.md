@@ -47,6 +47,30 @@
 | `POST /v1/auth/*` | login, refresh, logout, switch-tenant, invite, reset | Rate limits, generic errors, revocation semantics; tenant authority = JWT `tid` claim minted after server-side membership verification (never headers/bodies) |
 | `GET /v1/tenants/mine` | Active memberships of the caller (workspace picker) | JWT only; server-derived tenant scope |
 
+#### Implementation status (P3 increment 1 — read + lifecycle)
+
+Shipped 2026-10-25 in `apps/api/src/cases/` (covered by `cases.integration.spec.ts`,
+`cases.controller.spec.ts`):
+
+| Endpoint | Status | Notes |
+|---|---|---|
+| `GET /v1/cases` | ✅ | keyset cursor `(updated_at, id)`; filters `status`, `priority`, `channel`, `assignee_id`, `queue_id`, `sla=overdue`. `AI-handled` filter deferred — no column yet |
+| `GET /v1/cases/{id}` | ✅ | `?limit=` / `?cursor=` page the `case_events` timeline. AI summary, handoff reason and sources land with their slices |
+| `POST /v1/cases/{id}/notes` | ✅ | writes a `case_event` with `visibility: internal` — never a `messages` row, so it can never reach a customer |
+| `POST /v1/cases/{id}/resolve` / `reopen` | ✅ | a repeat call returns `changed: false` rather than a duplicate transition |
+| `POST /v1/cases/{id}/reply` | ⏳ P3b | needs channel delivery state + the AI send-lock |
+| `POST /v1/cases/{id}/handoff` | ⏳ P3b | needs destination eligibility + the `handoff.requested` producer |
+
+**Authz** is declared per endpoint, default-deny (SECURITY.md §auth): reads require
+`cases.view`, writes require `cases.reply` (owner/admin/agent — viewer is read-only);
+`cases.manage` stays reserved for assignment/queue changes. Enforcement is the permission-key
+check in `RolesGuard`, resolved from `role_permissions` on every request.
+
+**Not yet accepted:** `Idempotency-Key`. Its storage lands with `messages.idempotency_key` in
+P3b; until then resolve/reopen are idempotent *by behaviour* (no-op, `changed: false`) rather
+than by key. List ordering is `updated_at DESC` with `updated_at` written explicitly by the
+service — migration 003 has no update trigger, so any other writer must bump it too.
+
 ### Webhooks (inbound provider events)
 | Endpoint | Purpose | Key checks |
 |---|---|---|

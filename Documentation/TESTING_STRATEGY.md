@@ -87,14 +87,15 @@ to `never`, and a `capture()` return field typed as an array but returned as a f
 
 ## 8. Gate enforcement status (honest accounting)
 
-What Gate A/B actually enforce today — CI is a real gate for every row except Lint:
+What Gate A/B actually enforce today — every row below is enforced per PR in CI (the dependency
+scan blocks on production `critical` only, so it carries ⚠️):
 
 | Gate A/B requirement | Enforced per PR in CI? | Local |
 |---|---|---|
 | Unit tests | ✅ job `build-test` → `pnpm test` | ✅ |
 | Type checks (src **+ specs**) | ✅ job `build-test` → `pnpm typecheck` | ✅ |
 | Build | ✅ job `build-test` → `pnpm build` | ✅ |
-| RLS suite + QA-005 negatives (Gates A/B) | ✅ `postgres:17` service → provision → migrate → 9 posture assertions → `pnpm test` | ✅ 149/149 |
+| RLS suite + QA-005 negatives (Gates A/B) | ✅ `postgres:17` service → provision → migrate → 9 posture assertions → `pnpm test` | ✅ 177/177 |
 | Migration validation | ✅ own step: `db:migrate` runs as the **owner** role; a failing migration fails the job | ✅ `db:migrate` per slice |
 | Secret scan (gitleaks — ADR-012) | ✅ job `secret-scan`: v8.30.1 pinned, **full history** (`fetch-depth: 0`), `--redact` | ✅ 0 findings / 14 commits |
 | Dependency scan (`pnpm audit`) | ⚠️ job `dependency-scan`: **blocks on production critical**, all advisories printed non-blocking | ✅ baseline recorded below |
@@ -110,7 +111,7 @@ scanner (which scans that very file) to find. Then it replays the local cluster'
    and `aicsp_app` (`NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`), the `ai_csp_test` database
    and the ADR-003 `ALTER DEFAULT PRIVILEGES` grant — idempotent, and it never re-grants on existing
    tables, so migrations 005/006's `REVOKE UPDATE, DELETE` on the append-only tables stays intact
-2. `pnpm --filter @aicsp/api db:migrate` applies 001→006 **as the owner**
+2. `pnpm --filter @aicsp/api db:migrate` applies 001→007 **as the owner**
 3. the same script re-runs with `--check-grants`: **9 assertions** (app role can SELECT/INSERT
    business tables, has schema USAGE, cannot UPDATE/DELETE `audit_events` or `outbox_events`, RLS
    enabled on `cases` and `audit_events`) — one named failure instead of seven suites dying with
