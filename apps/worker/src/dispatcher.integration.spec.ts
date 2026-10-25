@@ -148,14 +148,20 @@ d('OutboxDispatcher integration (006_outbox, owner role)', () => {
     );
 
     // attempt 1 -> retry with ~base backoff
+    // Bracket the tick: next_attempt_at is stamped while the handler runs, so
+    // measuring it *after* the row query would shrink under a loaded machine
+    // (observed flake: query latency ate the 100ms margin below). The window
+    // is [before + 400, after + 1200] — immune to slow queries, still pinned
+    // to the ~500ms base backoff.
+    const before = Date.now();
     const t1res = await dispatcher.tick();
     expect(t1res).toMatchObject({ claimed: 1, retried: 1, dead: 0 });
     let row = await rowOf(id);
+    const after = Date.now();
     expect(row.state).toBe('pending');
     expect(row.attempts).toBe(1);
-    const delay = row.next_attempt_at.getTime() - Date.now();
-    expect(delay).toBeGreaterThanOrEqual(400); // ~500ms, clock-skew margin
-    expect(delay).toBeLessThanOrEqual(1200);
+    expect(row.next_attempt_at.getTime()).toBeGreaterThanOrEqual(before + 400); // ~500ms, clock-skew margin
+    expect(row.next_attempt_at.getTime()).toBeLessThanOrEqual(after + 1200);
 
     // attempt 2 (>= maxAttempts) -> dead
     await makeDue(id);

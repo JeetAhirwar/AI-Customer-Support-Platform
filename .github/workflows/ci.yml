@@ -24,4 +24,9 @@ jobs:
         run: pnpm build
       - name: Unit tests
         run: pnpm test
-      # Phase 2 adds: cross-tenant negative tests (release gate, TESTING_STRATEGY.md Gates A/B)
+      # Gate A/B gap (TESTING_STRATEGY.md §8): the DB-backed suites
+      # (rls.integration, security/cross-tenant.integration, audit/outbox/
+      # tenancy/observability integration, worker dispatcher) SKIP here because
+      # there is no Postgres service — they need migrations + TEST_DATABASE_URL.
+      # Lint / gitleaks / pnpm audit are also not wired yet. CI scope decision
+      # pending with the founder (PROGRESS_TRACKER.md → Next recommended task #3).

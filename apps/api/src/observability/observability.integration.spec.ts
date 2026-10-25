@@ -40,20 +40,27 @@ d('observability integration (correlation + metrics, real app boot)', () => {
   let email: string;
   const password = 'Observability!Pass123';
 
+  /**
+   * Fastify's `inject` typing demands the full InjectOptions shape (10+
+   * required fields); these suites only ever pass method/url/headers/payload,
+   * so adapt to the minimal contract the tests actually use.
+   */
   const inject = async (req: {
     method?: string;
     url: string;
     headers?: Record<string, string>;
     payload?: unknown;
-  }): Promise<InjectResponse> =>
-    app.getHttpAdapter()
-      .getInstance()
-      .inject({
-        method: (req.method ?? 'GET') as 'GET',
-        url: req.url,
-        headers: req.headers,
-        ...(req.payload !== undefined ? { payload: req.payload } : {}),
-      });
+  }): Promise<InjectResponse> => {
+    const instance = app.getHttpAdapter().getInstance() as unknown as {
+      inject: (opts: Record<string, unknown>) => Promise<InjectResponse>;
+    };
+    return instance.inject({
+      method: req.method ?? 'GET',
+      url: req.url,
+      ...(req.headers !== undefined ? { headers: req.headers } : {}),
+      ...(req.payload !== undefined ? { payload: req.payload } : {}),
+    });
+  };
 
   beforeAll(async () => {
     process.env.DATABASE_URL = testDbUrl;

@@ -7,7 +7,7 @@
     "dev": "tsx watch src/main.ts",
     "start": "node dist/main.js",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.spec.json --noEmit",
     "db:migrate": "node-pg-migrate up --database-url-var MIGRATIONS_DATABASE_URL",
     "db:migrate:down": "node-pg-migrate down --database-url-var MIGRATIONS_DATABASE_URL"
   },

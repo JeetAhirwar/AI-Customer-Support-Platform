@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Pool } from 'pg';
-import { OutboxDispatcher, startDispatcherLoop } from './dispatcher';
+import {
+  OutboxDispatcher,
+  startDispatcherLoop,
+  type OutboxHandler,
+} from './dispatcher';
 
 /**
  * Dispatcher unit (no DB): backoff math, registry/claim filtering contract,
@@ -9,8 +13,8 @@ import { OutboxDispatcher, startDispatcherLoop } from './dispatcher';
  */
 
 function makeDispatcher(
-  handlers: Map<string, (e: never) => Promise<void>>,
-  opts?: Parameters<typeof OutboxDispatcher>[2],
+  handlers: ReadonlyMap<string, OutboxHandler>,
+  opts?: ConstructorParameters<typeof OutboxDispatcher>[2],
 ): OutboxDispatcher {
   const pool = {
     connect: () => {

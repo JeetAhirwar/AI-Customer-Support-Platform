@@ -31,8 +31,8 @@ QA-001 grounded FAQ → AI eval suite · QA-002 unknown question → eval (refus
 
 | Gate | Required evidence | Blockers include |
 |---|---|---|
-| **A — PR/CI** | Unit tests, lint, type checks, secret + dependency scans, migration validation, **RLS enforcement suite run as the app role** (`rls.integration.spec.ts`, Gate-A negatives) | Broken build, exposed secret, unreviewed schema change, tenant-policy bypass |
-| **B — Integration** | DB/queue/outbox, provider adapters, signatures, idempotency, permission tests | Cross-tenant access, duplicate customer send, lost job |
+| **A — PR/CI** | Unit tests, lint, type checks, secret + dependency scans, migration validation, **RLS enforcement suite run as the app role** (`rls.integration.spec.ts` ×31 incl. the 8-table matrix) **+ the QA-005 HTTP suite** (`security/cross-tenant.integration.spec.ts`) | Broken build, exposed secret, unreviewed schema change, tenant-policy bypass |
+| **B — Integration** | DB/queue/outbox, provider adapters, signatures, idempotency, permission tests (`tenancy`, `audit`, `outbox`, `observability`, `dispatcher` integration suites) | Cross-tenant access, duplicate customer send, lost job |
 | **C — E2E** | Chat (then email, then voice) happy + failure paths; handoff + resolution | Lost context, unsafe answer, failed fallback |
 | **D — AI quality** | Eval regression set, groundedness, injection + sensitive-request tests | Mandatory handoff ignored, unsupported claim, regression beyond threshold |
 | **E — Pilot readiness** | Load/latency results, backup restore drill, alerts, runbooks, privacy review | No kill switch, untested restore, unknown incident owner |
@@ -67,4 +67,40 @@ boot the real `AppModule`; earlier suites constructed services/guards directly.
   **must** run under this config — a spec that bypasses it will look like an app bug.
 - `@swc/core` is on the `allowBuilds` allowlist in `pnpm-workspace.yaml` (pnpm blocks
   postinstalls by default; the script is swc's standard optional-binary check).
+
+## 7. Spec files are typechecked (Gate A "type checks")
+
+Every package `tsconfig.json` excluded `src/**/*.spec.ts`, so `tsc --noEmit` never looked at
+tests — and vitest runs them through SWC, which **strips** types rather than checking them. A
+spec could be entirely untyped and still report green. Each package now has a
+`tsconfig.spec.json` chained into its `typecheck` script:
+
+```
+tsc -p tsconfig.json --noEmit && tsc -p tsconfig.spec.json --noEmit
+```
+
+Adopting it surfaced **9 real type errors across 5 specs** (CHANGELOG 2026-10-25) — none of them
+runtime failures, i.e. exactly the class of defect Gate A's "type checks" exists to catch:
+a test double shaped like `Partial<FastifyRequest>`, fastify's full `InjectOptions` against a
+minimal helper, `Parameters<typeof SomeClass>` on a construct-only type, a handler map narrowed
+to `never`, and a `capture()` return field typed as an array but returned as a function.
+
+## 8. Gate enforcement status (honest accounting)
+
+What Gate A/B actually enforce today — local results are recorded, CI is not yet a gate for all of it:
+
+| Gate A/B requirement | Enforced per PR in CI? | Local |
+|---|---|---|
+| Unit tests | ✅ `pnpm test` | ✅ |
+| Type checks (src **+ specs**) | ✅ `pnpm typecheck` | ✅ |
+| Build | ✅ `pnpm build` | ✅ |
+| RLS suite + QA-005 negatives (Gates A/B) | ❌ no Postgres service in Actions — suites skip without `TEST_DATABASE_URL` | ✅ 149/149 |
+| Migration validation | ❌ | ✅ `db:migrate` run manually per slice |
+| Lint | ❌ **no ESLint config exists in the repo** | ❌ |
+| Secret scan (gitleaks — open ADR-012 item) | ❌ | ✅ manual pattern audit per commit |
+| Dependency scan (`pnpm audit`) | ❌ | ❌ |
+
+Closing the ❌ column is a founder decision on CI scope (Postgres service container, gitleaks,
+`pnpm audit`, and/or adopting ESLint) — recorded in `PROGRESS_TRACKER.md` → *Next recommended
+task* #3. The suites themselves are done and green; only their per-PR enforcement is pending.
 

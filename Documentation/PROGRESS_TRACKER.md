@@ -1,7 +1,7 @@
 # PROGRESS TRACKER
 ## AI Customer Support Platform
 
-**Current phase: Phase 2 (Foundation) — IN PROGRESS · infra ✅ + scaffold ✅ + auth ✅ + tenancy/RBAC ✅ + case/message schema + RLS ✅ + audit log ✅ + outbox/queue ✅ + observability ✅ (2026-10-25) · next: Gate-A/B cross-tenant negative tests to close P2**
+**Current phase: Phase 2 (Foundation) — **COMPLETE ✅ (2026-10-25)** · infra ✅ + scaffold ✅ + auth ✅ + tenancy/RBAC ✅ + case/message schema + RLS ✅ + audit log ✅ + outbox/queue ✅ + observability ✅ + **Gate-A/B cross-tenant negative tests ✅ (QA-005 release gate)** · next: CI enforcement of the gates (Postgres service in Actions + lint/secret/dependency scans — decision pending), then P3 (cases API)**
 Last updated: 2026-10-25
 
 ## Status board
@@ -10,7 +10,7 @@ Last updated: 2026-10-25
 |---|---|---|
 | P0 Discovery | Read 5 DOCX docs, inspect environment, discovery report | **COMPLETED** (2026-10-15) |
 | P1 Architecture & stack approval | ADRs, service boundaries, security model, API contracts; stack approval | **COMPLETED** (2026-10-16): founder approved D-01=A', D-02=TypeScript+NestJS/Fastify, D-03=native/E:, D-07=yes, D-13=chat-first + D-14=claymorphism; final ADRs 001/010–014 issued; full Phase-1 doc set written |
-| P2 Foundation | Git/CI, auth, tenants, RBAC, case/message schema, audit, outbox/queue, observability | **IN PROGRESS** — infra ✅; scaffold ✅; **auth ✅; tenancy+RBAC ✅ (2026-10-16); case/message schema + RLS ✅ (2026-10-19); audit log ✅ (2026-10-19); outbox/queue ✅ (2026-10-19); observability ✅ (2026-10-25)**; next: Gate-A/B cross-tenant negative tests (release gate) |
+| P2 Foundation | Git/CI, auth, tenants, RBAC, case/message schema, audit, outbox/queue, observability | **COMPLETE ✅ (2026-10-25)** — infra ✅; scaffold ✅; auth ✅ (2026-10-16); tenancy+RBAC ✅ (2026-10-16); case/message schema + RLS ✅ (2026-10-19); audit log ✅ (2026-10-19); outbox/queue ✅ (2026-10-19); observability ✅ (2026-10-25); **Gate-A/B cross-tenant negatives ✅ (2026-10-25)** — exit gate "cross-tenant negative tests pass" met; per-PR CI enforcement pending decision |
 | P3 Chat vertical slice | Widget, chat adapter, knowledge ingestion + RAG, grounded AI, handoff, agent workspace | NOT STARTED |
 | P4 Email | Inbound/outbound, threading, dedup, delivery states, bounce, attachments | NOT STARTED |
 | P5 Inbound voice | Mock first; then provider, speech pipeline, transfer, consent, fallback | NOT STARTED |
@@ -97,6 +97,15 @@ Last updated: 2026-10-25
 - ✅ (2026-10-19) **Gate-B tests ×17**: API `outbox.integration.spec.ts` ×5 as the app role — **atomicity (rolled-back append disappears)**, cross-tenant isolation + WITH CHECK forge, append-only (UPDATE/DELETE denied), no-scope fail-closed; worker `dispatcher.integration.spec.ts` ×6 as the owner role — publish path with envelope round-trip, retry→backoff→DLQ chain (`next_attempt_at` ≈ now+base), **SKIP LOCKED under two concurrent dispatchers (exactly-once claims)**, unhandled types left pending, cross-tenant drain, re-claim after finalize loss; worker `dispatcher.spec.ts` ×4 — backoff math (exponential/cap/jitter bound), empty-registry no-op, claim-filter surface, poll-loop wiring + onError
 - ✅ Verified: worker boot (missing var → exit 1 naming it; with var → `[worker] started (outbox dispatcher, poll=1000ms, types=0)`); API unchanged paths re-smoked
 
+## Completed tasks (P2 — QA-005 close-out, Gates A/B)
+- ✅ (2026-10-25) **P2 release gate met: cross-tenant negative tests passing (Gates A/B)**
+- ✅ **QA-005 API-level suite** `apps/api/src/security/cross-tenant.integration.spec.ts` ×9 — two independent tenants driven through the **real `AppModule`** over injected HTTP: default-deny 401 · workspace picker scoped to the caller · audit trail isolation incl. a **direct `actor_id` probe for the foreign user returning empty** (and `tenant_id` never serialized) · **forged `tid` claim** (valid signature, wrong tenant) → 403 · **forged `role` claim** (token `owner`, DB `viewer`) denied identically to the honest viewer token · HTTP role matrix owner/admin vs agent/viewer · **revocation effective on the next request** (no token caching) · cross-tenant switch **byte-identical to an unknown tenant** (status + code + message) granting no membership
+- ✅ **RLS matrix extended to every tenant-scoped table** `src/db/rls.integration.spec.ts` **7 → 31 tests** — `queues, customers, customer_identities, conversations, cases, messages, case_events, handoffs` each proven for: policy enabled + present, own/foreign/none SELECT visibility, forged-tenant `INSERT` rejected by `WITH CHECK`, scopeless `INSERT` fail-closed (the 7 `003_conversation` policies had **no** enforcement test before this pass)
+- ✅ **Flaky `dispatcher.integration` backoff assertion hardened** (TESTING_STRATEGY §5.3): brackets the tick instead of measuring after a slow row query — 3 consecutive full worker runs green
+- ✅ **Test files now typechecked** (Gate A): `tsconfig.spec.json` per package chained into `typecheck`; caught **9 real type errors** SWC had been stripping (`metrics.spec` `fakeContext`, both integration `inject()` helpers, `dispatcher.spec` class/handler typing, shared `capture().lines`)
+- ✅ Verified: **typecheck 4/4 (src + specs), build 3/3, vitest 149/149 across 23 files, 6/6 turbo tasks**, secrets audit clean
+- ⏳ **Open (deferred, needs a decision)**: CI still runs typecheck+build+unit only — DB suites need a Postgres service + migrations in Actions, and Gate A also requires lint (no ESLint config in repo), gitleaks (ADR-012 open item) and `pnpm audit`
+
 ## Completed tasks (P2 — observability, ADR-008)
 - ✅ (2026-10-25) **ADR-008 accepted + executed** (pino JSON logs, correlation context, Prometheus baseline, staged OpenTelemetry): one log stream threading ingress → logs → error envelope → audit → outbox → worker, exactly the `X-Correlation-ID` contract in API_CONTRACTS §1/§3
 - ✅ **Shared options builder** `packages/shared/src/logger.ts`: `LOG_LEVELS` + `resolveLogLevel()` (fail-fast naming `LOG_LEVEL` only, never echoes the bad value) + `REDACT_PATHS` (password/authorization/cookie/token/secret/api_key, headers + body) + `buildPinoOptions({ level, service, mixin })` — api and worker can't drift because there is one builder; transport = **stdout only** (rotation/retention deferred to D-06 per SECURITY §7)
@@ -117,6 +126,7 @@ Last updated: 2026-10-25
 - App tests 2026-10-19 (audit log): **workspace vitest 74/74 across 15 files — 6/6 turbo tasks green** (api 71 incl. 11 audit DB-integration as the app role + 6 controller unit + prior suites, worker 2, shared 1) + typecheck/build green; live HTTP smoke extended (audit list 200 with `auth.login` event, bad cursor/limit 400, no token 401) — full auth chain re-verified.
 - App tests 2026-10-19 (outbox/queue): **workspace vitest 89/89 across 17 files — 6/6 turbo tasks green** (api 76 incl. 5 outbox Gate-B DB tests as the app role, worker 12 incl. 6 dispatcher integration as the owner role + 4 unit, shared 1) + typecheck/build green; worker boot verified both paths (fail-fast without `WORKER_DATABASE_URL`, dispatcher idle with it). Redis not required for this slice (BullMQ deferred per ADR-002 §7).
 - App tests 2026-10-25 (observability): **workspace vitest 116/116 across 22 files — 6/6 turbo tasks green** (api 97 incl. 7 real-`AppModule` Gate-B tests + 6 correlation + 7 metrics + `LOG_LEVEL` config, worker 12, shared 7) + typecheck/build green; DB integration actually running this time (`$env:TEST_DATABASE_URL` from `.env`). Live smoke: all-JSON logs, no secret leakage, correlation thread header → envelope → audit → logs, `/metrics` bounded labels. **One `dispatcher.integration.spec` failure observed in 1 of 3 full-suite runs under parallel load** (passed on re-run 8/8 since: 2 full-suite + 5× standalone + 1 full) — timing-sensitive DLQ assertion, **owner: worker slice, to be hardened before the P2 close-out** (TESTING_STRATEGY §5.3, not ignored).
+- App tests 2026-10-25 (QA-005 close-out, Gates A/B): **workspace vitest 149/149 across 23 files — 6/6 turbo tasks green** (api 130 incl. **9 QA-005 real-app cross-tenant negatives** + **31 RLS tests** (was 7) + 11 audit + 7 outbox + 7 observability, worker 12, shared 7) + typecheck 4/4 **now covering spec files** + build 3/3; secrets audit clean (synthetic fixture passwords only). Worker dispatcher timing assertion hardened → **3 consecutive full worker runs green**. Two fixture bugs found and fixed while writing the suite (membership insert param order — RLS rejected it *correctly*; single-use refresh token needed a fresh login per switch probe).
 - DOCX extraction: 5/5. Git ignore rules: `.env` ignored, `.env.example` trackable.
 
 ## Current blockers
@@ -136,9 +146,11 @@ See `DECISIONS_PENDING.md` (relevant now: D-04…D-12 open as scheduled). D-15 c
 5. Timeline assumes ~20-person team — re-baseline for actual capacity after approval
 
 ## Next recommended task
-**Continue P2 Foundation** (scaffold ✅, auth ✅, tenancy+RBAC ✅, case/message schema + RLS ✅, audit log ✅, outbox/queue ✅, observability ✅):
+**P2 Foundation is CLOSED** (scaffold ✅, auth ✅, tenancy+RBAC ✅, case/message schema + RLS ✅, audit log ✅, outbox/queue ✅, observability ✅, **Gate-A/B cross-tenant negatives ✅ 2026-10-25**):
 1. ~~Observability~~ → **DONE 2026-10-25** (ADR-008 executed; logs + correlation + `/metrics` baseline, `OTEL_*` still staged)
-2. Close P2 with **cross-tenant negative tests passing** (Gates A/B) as the release gate — incl. the flaky `dispatcher.integration` timing assertion noted under *Tests run*; producer wiring (`case.created` etc.) starts with the cases API (P3)
+2. ~~Close P2 with cross-tenant negative tests passing (Gates A/B)~~ → **DONE 2026-10-25** (QA-005 suite ×9 + RLS matrix 31 + flaky dispatcher assertion hardened); producer wiring (`case.created` etc.) starts with the cases API (P3)
+3. **Decide CI gate scope** (founder): the suites pass locally but are not enforced per-PR — options are (a) Postgres 17 service container + migrations + `TEST_DATABASE_URL` so Gate A/B actually run in Actions, (b) add gitleaks (ADR-012 open item) + `pnpm audit`, (c) introduce ESLint (no lint config exists yet). Nothing in the repo changes without that call
+4. **P3 — cases API** (first business slice): cases/messages endpoints over the already-RLS-protected tables, outbox producers (`case.created` …), UI hooks
 - ~~First git commit only with separate authorization (B-2)~~ → **DONE 2026-10-16**: root `6e903df` + doc-sync `6b1ca13` + auth `674248a` + push-record `7349dd4` + tenancy/RBAC `1de9898` — **all pushed to origin** (2×, each separately approved); routine commits pre-authorized, pushes gated (ADR-012 amendment)
 
 ## Resume commands

@@ -8,7 +8,8 @@ import {
 } from './logger';
 
 function capture(options: Parameters<typeof buildPinoOptions>[0]): {
-  lines: Record<string, unknown>[];
+  /** parses the captured chunks on each call — lazily, after the log line */
+  lines: () => Record<string, unknown>[];
   logger: pino.Logger;
 } {
   const chunks: string[] = [];

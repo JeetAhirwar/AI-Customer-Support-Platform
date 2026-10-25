@@ -226,4 +226,219 @@ d('RLS enforcement (004_rls)', () => {
     );
     expect(t2FromT1.rows).toHaveLength(0);
   });
+
+  // ---------------------------------------------------------------------
+  // Matrix: every table 004_rls enables RLS on (the customers cases above
+  // were the only ones proven before this pass — the other 7 policies from
+  // 003_conversation had no enforcement test at all).
+  // ---------------------------------------------------------------------
+
+  type Chain = Record<string, string>;
+
+  let chain1: Chain;
+  let chain2: Chain;
+
+  /** One row per tenant-scoped table, in FK order, inside a single scope. */
+  const buildChain = async (tenant: string, tag: string): Promise<Chain> =>
+    withTenant(tenant, async (c) => {
+      const one = async (sql: string, params: unknown[]): Promise<string> => {
+        const r = await c.query<{ id: string }>(sql, params);
+        return r.rows[0]!.id;
+      };
+
+      const customer = await one(
+        `INSERT INTO customers (tenant_id, display_name) VALUES ($1, $2) RETURNING id`,
+        [tenant, `RLS ${tag}`],
+      );
+      const queue = await one(
+        `INSERT INTO queues (tenant_id, name) VALUES ($1, $2) RETURNING id`,
+        [tenant, `RLS ${tag}`],
+      );
+      const identity = await one(
+        `INSERT INTO customer_identities (tenant_id, customer_id, channel, external_id)
+         VALUES ($1, $2, 'chat', $3) RETURNING id`,
+        [tenant, customer, `rls-${tag}`],
+      );
+      const conversation = await one(
+        `INSERT INTO conversations (tenant_id, channel, customer_id)
+         VALUES ($1, 'chat', $2) RETURNING id`,
+        [tenant, customer],
+      );
+      const caseId = await one(
+        `INSERT INTO cases (tenant_id, customer_id, conversation_id)
+         VALUES ($1, $2, $3) RETURNING id`,
+        [tenant, customer, conversation],
+      );
+      const message = await one(
+        `INSERT INTO messages (tenant_id, conversation_id, direction, actor_type)
+         VALUES ($1, $2, 'inbound', 'customer') RETURNING id`,
+        [tenant, conversation],
+      );
+      const caseEvent = await one(
+        `INSERT INTO case_events (tenant_id, case_id, event_type, actor_type)
+         VALUES ($1, $2, 'case.opened', 'system') RETURNING id`,
+        [tenant, caseId],
+      );
+      const handoff = await one(
+        `INSERT INTO handoffs (tenant_id, case_id, reason) VALUES ($1, $2, 'rls probe') RETURNING id`,
+        [tenant, caseId],
+      );
+
+      return {
+        queues: queue,
+        customers: customer,
+        customer_identities: identity,
+        conversations: conversation,
+        cases: caseId,
+        messages: message,
+        case_events: caseEvent,
+        handoffs: handoff,
+      };
+    });
+
+  beforeAll(async () => {
+    chain1 = await buildChain(t1, 'one');
+    chain2 = await buildChain(t2, 'two');
+  }, 60_000);
+
+  const TABLES = [
+    {
+      table: 'queues',
+      insertSql: `INSERT INTO queues (tenant_id, name) VALUES ($1, $2)`,
+      insertArgs: (tenant: string): unknown[] => [tenant, 'forged queue'],
+    },
+    {
+      table: 'customers',
+      insertSql: `INSERT INTO customers (tenant_id, display_name) VALUES ($1, $2)`,
+      insertArgs: (tenant: string): unknown[] => [tenant, 'forged customer'],
+    },
+    {
+      table: 'customer_identities',
+      insertSql: `INSERT INTO customer_identities (tenant_id, customer_id, channel, external_id)
+                  VALUES ($1, $2, 'chat', $3)`,
+      insertArgs: (tenant: string, chain: Chain): unknown[] => [
+        tenant,
+        chain.customers!,
+        'forged-external-id',
+      ],
+    },
+    {
+      table: 'conversations',
+      insertSql: `INSERT INTO conversations (tenant_id, channel, customer_id)
+                  VALUES ($1, 'chat', $2)`,
+      insertArgs: (tenant: string, chain: Chain): unknown[] => [
+        tenant,
+        chain.customers!,
+      ],
+    },
+    {
+      table: 'cases',
+      insertSql: `INSERT INTO cases (tenant_id, customer_id) VALUES ($1, $2)`,
+      insertArgs: (tenant: string, chain: Chain): unknown[] => [
+        tenant,
+        chain.customers!,
+      ],
+    },
+    {
+      table: 'messages',
+      insertSql: `INSERT INTO messages (tenant_id, conversation_id, direction, actor_type)
+                  VALUES ($1, $2, 'inbound', 'customer')`,
+      insertArgs: (tenant: string, chain: Chain): unknown[] => [
+        tenant,
+        chain.conversations!,
+      ],
+    },
+    {
+      table: 'case_events',
+      insertSql: `INSERT INTO case_events (tenant_id, case_id, event_type, actor_type)
+                  VALUES ($1, $2, 'forged', 'system')`,
+      insertArgs: (tenant: string, chain: Chain): unknown[] => [tenant, chain.cases!],
+    },
+    {
+      table: 'handoffs',
+      insertSql: `INSERT INTO handoffs (tenant_id, case_id, reason) VALUES ($1, $2, $3)`,
+      insertArgs: (tenant: string, chain: Chain): unknown[] => [
+        tenant,
+        chain.cases!,
+        'forged handoff',
+      ],
+    },
+  ] as const;
+
+  it.each(TABLES)('$table: RLS enabled with a tenant policy (Gate A)', async ({ table }) => {
+    const rls = await pool.query<{ rls: boolean | null }>(
+      `SELECT relrowsecurity AS rls FROM pg_class WHERE oid = to_regclass($1)`,
+      [`public.${table}`],
+    );
+    expect(rls.rows[0]?.rls, `${table} must have RLS on`).toBe(true);
+
+    const policies = await pool.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM pg_policies
+        WHERE schemaname = 'public' AND tablename = $1`,
+      [table],
+    );
+    expect(policies.rows[0]!.n).toBeGreaterThan(0);
+  });
+
+  it.each(TABLES)(
+    '$table: own tenant sees the row, foreign tenant and no scope read empty (Gate A)',
+    async ({ table }) => {
+      const id1 = chain1[table]!;
+      const own = await withTenant(t1, (c) =>
+        c.query(`SELECT id FROM ${table} WHERE id = $1`, [id1]),
+      );
+      expect(own.rows, `${table} must be visible to its own tenant`).toHaveLength(1);
+
+      const foreign = await withTenant(t2, (c) =>
+        c.query(`SELECT id FROM ${table} WHERE id = $1`, [id1]),
+      );
+      expect(foreign.rows).toHaveLength(0);
+
+      const noScope = await pool.query(`SELECT id FROM ${table} WHERE id = $1`, [id1]);
+      expect(noScope.rows).toHaveLength(0);
+    },
+  );
+
+  it.each(TABLES)(
+    '$table: forged tenant INSERT fails WITH CHECK, scopeless INSERT is fail-closed (Gate A)',
+    async ({ table, insertSql, insertArgs }) => {
+      const forged = await scopedClient('app.tenant_id', t2);
+      try {
+        // claims t1's tenant + t1's parent rows while scoped as t2
+        const message = await violationOf(() =>
+          forged.query(insertSql, insertArgs(t1, chain1)),
+        );
+        expect(message, `${table} must reject a foreign-tenant insert`)
+          .toMatch(/row-level security policy/);
+      } finally {
+        await forged.query('ROLLBACK').catch(() => undefined);
+        forged.release();
+      }
+
+      const anon = await scopedClient(null, null);
+      try {
+        const message = await violationOf(() =>
+          anon.query(insertSql, insertArgs(t1, chain1)),
+        );
+        expect(message, `${table} must reject a scopeless insert`)
+          .toMatch(/row-level security policy/);
+      } finally {
+        await anon.query('ROLLBACK').catch(() => undefined);
+        anon.release();
+      }
+
+      // nothing was written: both attempts rolled back
+      const count = await withTenant(t1, (c) =>
+        c.query<{ n: number }>(`SELECT count(*)::int AS n FROM ${table}`),
+      );
+      expect(count.rows[0]!.n).toBeGreaterThan(0);
+      const foreignView = await withTenant(t2, (c) =>
+        c.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM ${table} WHERE id = $1`,
+          [chain1[table]!],
+        ),
+      );
+      expect(foreignView.rows[0]!.n).toBe(0);
+    },
+  );
 });

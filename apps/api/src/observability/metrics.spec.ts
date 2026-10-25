@@ -10,8 +10,18 @@ import {
   routeLabel,
 } from './metrics';
 
+/**
+ * Test double for the request the interceptor actually reads. Typed narrowly
+ * on purpose: Fastify's `RequestRouteOptions` has 10+ required fields that a
+ * fake context has no business constructing.
+ */
+interface FakeRequest {
+  method?: string;
+  routeOptions?: { url?: string };
+}
+
 function fakeContext(
-  request: Partial<FastifyRequest>,
+  request: FakeRequest,
   reply: { statusCode?: number } = {},
 ): ExecutionContext {
   return {
