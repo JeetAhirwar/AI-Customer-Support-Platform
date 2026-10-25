@@ -22,7 +22,6 @@ import { hashPassword } from '../auth/password';
 const testDbUrl = process.env.TEST_DATABASE_URL;
 const d = describe.skipIf(!testDbUrl);
 
-const SAFE = /^[A-Za-z0-9._:\-]+$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 interface InjectResponse {

@@ -396,6 +396,19 @@ d('RLS enforcement (004_rls)', () => {
 
       const noScope = await pool.query(`SELECT id FROM ${table} WHERE id = $1`, [id1]);
       expect(noScope.rows).toHaveLength(0);
+
+      // …and the mirror direction: t2's own fixture row is visible to t2 but
+      // hidden from t1, so "foreign tenant reads empty" is proven both ways and
+      // chain2 (built in beforeAll) is actually asserted on.
+      const id2 = chain2[table]!;
+      const mirrored = await withTenant(t2, (c) =>
+        c.query(`SELECT id FROM ${table} WHERE id = $1`, [id2]),
+      );
+      expect(mirrored.rows, `${table} must be visible to its own tenant (t2)`).toHaveLength(1);
+      const back = await withTenant(t1, (c) =>
+        c.query(`SELECT id FROM ${table} WHERE id = $1`, [id2]),
+      );
+      expect(back.rows, `${table} must stay hidden from t1`).toHaveLength(0);
     },
   );
 

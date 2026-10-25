@@ -28,17 +28,6 @@ function ctxFor(opts: {
   return { guard: new RolesGuard(reflector, tenancy), context, request, resolveMembership };
 }
 
-function codeOf(fn: () => unknown): string {
-  try {
-    fn();
-    return 'no-error';
-  } catch (err) {
-    return err instanceof AppException
-      ? String((err.getResponse() as { code?: string }).code)
-      : `unexpected:${err}`;
-  }
-}
-
 async function asyncCodeOf(fn: () => Promise<unknown>): Promise<string> {
   try {
     await fn();

@@ -98,7 +98,7 @@ What Gate A/B actually enforce today — CI is a real gate for every row except 
 | Migration validation | ✅ own step: `db:migrate` runs as the **owner** role; a failing migration fails the job | ✅ `db:migrate` per slice |
 | Secret scan (gitleaks — ADR-012) | ✅ job `secret-scan`: v8.30.1 pinned, **full history** (`fetch-depth: 0`), `--redact` | ✅ 0 findings / 14 commits |
 | Dependency scan (`pnpm audit`) | ⚠️ job `dependency-scan`: **blocks on production critical**, all advisories printed non-blocking | ✅ baseline recorded below |
-| Lint | ❌ **no ESLint config exists in the repo** — a toolchain decision, not a CI wiring task | ❌ |
+| Lint | ✅ job `build-test` → `pnpm lint` (ESLint 10 flat config, `typescript-eslint` recommended tier) | ✅ 0 problems |
 
 ### How the CI database gate works
 
@@ -140,4 +140,23 @@ is explicit and reviewable. Current production baseline: **15 advisories — 4 l
 4 high / 0 critical**, the highs being `fastify` plus transitive `fast-uri`. Raising the gate to
 `high` is a deliberate follow-up (upgrade fastify) and is **expected to fail until that lands** —
 the gate is set to the truth we have, not to a claim.
+
+### Lint (adopted 2026-10-25 — the last Gate A row)
+
+`eslint.config.mjs` (flat config) + `pnpm lint`, run in the `build-test` job ahead of typecheck:
+
+- **Tier:** `typescript-eslint` **recommended** — syntactic/type-shape rules that need no type
+  information, so the whole workspace lints in seconds inside CI. The type-aware tier
+  (`recommendedTypeChecked`: floating promises, unsafe `any` flows) is a deliberate follow-up; it
+  needs `projectService` and its own baseline pass rather than a rushed config
+- **Two deliberate scope decisions**, written into the config instead of left implicit:
+  `require()` is allowed in `apps/api/migrations/**` because node-pg-migrate loads migrations as
+  CommonJS (converting them would change migrate-time loading, not style), and `no-console` is an
+  **error** across `apps/**/src` + `packages/**/src` because ADR-008 routes all logging through
+  pino (correlation + redaction) — the single exception is `main.ts`'s pre-logger startup failure
+  path, disabled inline where pino does not exist yet
+- First run: **12 problems → 0**. Findings were fixed rather than silenced: two dead test helpers
+  (`codeOf`, an unread `SAFE`), an unused matrix fixture (`chain2` — now asserted, so the RLS
+  matrix proves visibility **both ways**), and three `no-useless-escape` hits in the correlation-id
+  regex whose own doc comment already showed the unescaped form
 

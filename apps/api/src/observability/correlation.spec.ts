@@ -9,7 +9,7 @@ import {
 } from './correlation';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const SAFE = /^[A-Za-z0-9._:\-]+$/;
+const SAFE = /^[A-Za-z0-9._:-]+$/;
 
 describe('sanitizeCorrelationId (ADR-008 §2)', () => {
   it('accepts printable bounded ids and trims them', () => {

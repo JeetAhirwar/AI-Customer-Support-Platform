@@ -76,6 +76,8 @@ jobs:
           --owner aicsp
           --app-role aicsp_app
           --check-grants
+      - name: Lint (Gate A)
+        run: pnpm lint
       - name: Typecheck (src + specs)
         run: pnpm typecheck
       - name: Build

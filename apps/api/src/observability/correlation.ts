@@ -18,7 +18,7 @@ const storage = new AsyncLocalStorage<CorrelationContext>();
  * Accepts only printable, bounded ids (`[A-Za-z0-9._:-]{1,128}`) — anything
  * else (CRLF injection, oversized, arrays, non-strings) becomes a fresh UUID.
  */
-const SAFE_CORRELATION_ID = /^[A-Za-z0-9._:\-]{1,128}$/;
+const SAFE_CORRELATION_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 
 export function sanitizeCorrelationId(raw: unknown): string {
   if (typeof raw === 'string') {
