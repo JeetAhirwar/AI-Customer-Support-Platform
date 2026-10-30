@@ -1,19 +1,33 @@
 import { describe, expect, it } from 'vitest';
 import { AppException } from '../common/errors';
-import type { CaseRow, CaseTimelineRow } from './cases.service';
+import type {
+  CaseRow,
+  CaseTimelineRow,
+  HandoffRow,
+  MessageRow,
+} from './cases.service';
 import {
   DEFAULT_LIMIT,
+  DEFAULT_MESSAGE_LIMIT,
+  MAX_HANDOFF_SUMMARY,
   MAX_LIMIT,
+  MAX_MESSAGE_LIMIT,
   MAX_NOTE_LENGTH,
+  MAX_REPLY_LENGTH,
   parseCaseCursor,
   parseEnum,
   parseEnumList,
+  parseHandoffBody,
+  parseIdempotencyKey,
   parseLimit,
   parseNoteBody,
   parseObjectBody,
+  parseReplyBody,
   parseResolveBody,
   parseUuid,
   toApiCase,
+  toApiHandoff,
+  toApiMessage,
   toApiTimelineEvent,
 } from './cases.controller';
 
@@ -143,6 +157,98 @@ describe('cases body parsing', () => {
       codeOf(() => parseResolveBody({ resolution_code: 'x'.repeat(65) })),
     ).toBe('validation_failed');
   });
+
+  it('requires a non-empty reply body within the size cap', () => {
+    expect(parseReplyBody({ body: 'here you go' })).toEqual({
+      body: 'here you go',
+    });
+    expect(codeOf(() => parseReplyBody(undefined))).toBe('validation_failed');
+    expect(codeOf(() => parseReplyBody({}))).toBe('validation_failed');
+    expect(codeOf(() => parseReplyBody({ body: '   ' }))).toBe(
+      'validation_failed',
+    );
+    expect(codeOf(() => parseReplyBody({ body: 3 }))).toBe(
+      'validation_failed',
+    );
+    expect(codeOf(() => parseReplyBody({ body: 'x', extra: 1 }))).toBe(
+      'validation_failed',
+    );
+    expect(
+      codeOf(() => parseReplyBody({ body: 'x'.repeat(MAX_REPLY_LENGTH + 1) })),
+    ).toBe('validation_failed');
+    expect(
+      parseReplyBody({ body: 'x'.repeat(MAX_REPLY_LENGTH) }).body,
+    ).toHaveLength(MAX_REPLY_LENGTH);
+  });
+
+  it('validates the optional Idempotency-Key header', () => {
+    expect(parseIdempotencyKey(undefined)).toBeUndefined();
+    expect(parseIdempotencyKey('')).toBeUndefined();
+    expect(parseIdempotencyKey('a1B2c3-_')).toBe('a1B2c3-_');
+    expect(parseIdempotencyKey('k'.repeat(128))).toHaveLength(128);
+    expect(
+      codeOf(() => parseIdempotencyKey('k'.repeat(129))),
+    ).toBe('validation_failed');
+    expect(codeOf(() => parseIdempotencyKey('line\nbreak'))).toBe(
+      'validation_failed',
+    );
+    expect(codeOf(() => parseIdempotencyKey('tab\there'))).toBe(
+      'validation_failed',
+    );
+    expect(codeOf(() => parseIdempotencyKey('del\x7Fchar'))).toBe(
+      'validation_failed',
+    );
+  });
+
+  it('validates the handoff body: required reason, optional queue + summary', () => {
+    expect(parseHandoffBody({ reason: 'customer asked for a human' })).toEqual({
+      reason: 'customer asked for a human',
+    });
+    expect(
+      parseHandoffBody({
+        reason: 'unknown answer',
+        destination_queue_id: '3F2B1C40-9D5E-4A6B-8C7D-1E2F3A4B5C6D',
+        summary: 'Thread so far: record the facts.',
+      }),
+    ).toEqual({
+      reason: 'unknown answer',
+      destination_queue_id: '3f2b1c40-9d5e-4a6b-8c7d-1e2f3a4b5c6d',
+      summary: 'Thread so far: record the facts.',
+    });
+    expect(codeOf(() => parseHandoffBody(undefined))).toBe(
+      'validation_failed',
+    );
+    expect(codeOf(() => parseHandoffBody({}))).toBe('validation_failed');
+    expect(codeOf(() => parseHandoffBody({ reason: '' }))).toBe(
+      'validation_failed',
+    );
+    expect(codeOf(() => parseHandoffBody({ reason: ' ' }))).toBe(
+      'validation_failed',
+    );
+    expect(
+      codeOf(() => parseHandoffBody({ reason: 'x'.repeat(513) })),
+    ).toBe('validation_failed');
+    expect(
+      codeOf(() => parseHandoffBody({ reason: 'ok', queue_id: UUID })),
+    ).toBe('validation_failed');
+    expect(
+      codeOf(() => parseHandoffBody({ reason: 'ok', destination_queue_id: 'x' })),
+    ).toBe('validation_failed');
+    expect(
+      codeOf(() => parseHandoffBody({ reason: 'ok', summary: '' })),
+    ).toBe('validation_failed');
+    expect(
+      codeOf(() => parseHandoffBody({ reason: 'ok', summary: 7 })),
+    ).toBe('validation_failed');
+    expect(
+      codeOf(() =>
+        parseHandoffBody({
+          reason: 'ok',
+          summary: 's'.repeat(MAX_HANDOFF_SUMMARY + 1),
+        }),
+      ),
+    ).toBe('validation_failed');
+  });
 });
 
 describe('response mapping', () => {
@@ -197,5 +303,51 @@ describe('response mapping', () => {
       metadata: { previous_status: 'open' },
       occurred_at: '2026-01-03T00:00:00.000Z',
     });
+  });
+
+  it('maps a message and a handoff with absent values as null', () => {
+    const message: MessageRow = {
+      id: 'm-1',
+      conversation_id: 'cv-1',
+      direction: 'outbound',
+      actor_type: 'agent',
+      body_preview: 'we shipped a fix',
+      delivery_state: 'pending',
+      sent_at: null,
+      created_at: new Date('2026-01-03T09:00:00.000Z'),
+      created_at_text: '2026-01-03T09:00:00.000000Z',
+    };
+    expect(toApiMessage(message)).toEqual({
+      id: 'm-1',
+      conversation_id: 'cv-1',
+      direction: 'outbound',
+      actor_type: 'agent',
+      body: 'we shipped a fix',
+      delivery_state: 'pending',
+      sent_at: null,
+      created_at: '2026-01-03T09:00:00.000Z',
+    });
+
+    const handoff: HandoffRow = {
+      id: 'h-1',
+      case_id: UUID,
+      reason: 'needs a senior',
+      destination_queue_id: null,
+      state: 'requested',
+      requested_at: new Date('2026-01-03T10:00:00.000Z'),
+    };
+    expect(toApiHandoff(handoff)).toEqual({
+      id: 'h-1',
+      case_id: UUID,
+      reason: 'needs a senior',
+      destination_queue_id: null,
+      state: 'requested',
+      requested_at: '2026-01-03T10:00:00.000Z',
+    });
+  });
+
+  it('documented defaults: message history page bounds', () => {
+    expect(DEFAULT_MESSAGE_LIMIT).toBe(50);
+    expect(MAX_MESSAGE_LIMIT).toBe(200);
   });
 });

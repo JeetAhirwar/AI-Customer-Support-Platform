@@ -12,7 +12,7 @@
 - **Auth:** admin/agent endpoints use short-lived JWT access tokens (Authorization: Bearer); chat widget uses short-lived signed session tokens scoped to one conversation session; webhooks use provider signature verification instead of user auth.
 - **Tenant scope:** derived server-side from the authenticated membership/session — never accepted from request bodies or headers as authority.
 - **Validation:** every request schema-validated at the boundary (class-validator/zod). Unknown fields on high-risk endpoints rejected.
-- **Errors:** uniform envelope — `{ error: { code, message, correlation_id, details? } }`. Codes are stable strings (e.g., `permission_denied`, `tenant_mismatch`, `validation_failed`, `rate_limited`, `provider_unavailable`). No stack traces or secrets in responses.
+- **Errors:** uniform envelope — `{ error: { code, message, correlation_id, details? } }`. Codes are stable strings (e.g., `permission_denied`, `tenant_mismatch`, `validation_failed`, `conflict`, `rate_limited`, `provider_unavailable`). No stack traces or secrets in responses.
 - **Pagination:** cursor-based (`?cursor=&limit=`) on all growing tables; never offset pagination on messages/events.
 - **Idempotency:** create/send/resolve operations accept `Idempotency-Key` header; duplicates return the original result. Provider events dedup via unique provider-event IDs.
 - **Rate limiting:** per tenant, user, IP/session, and provider; `Retry-After` on 429.
@@ -55,21 +55,28 @@ Shipped 2026-10-25 in `apps/api/src/cases/` (covered by `cases.integration.spec.
 | Endpoint | Status | Notes |
 |---|---|---|
 | `GET /v1/cases` | ✅ | keyset cursor `(updated_at, id)`; filters `status`, `priority`, `channel`, `assignee_id`, `queue_id`, `sla=overdue`. `AI-handled` filter deferred — no column yet |
-| `GET /v1/cases/{id}` | ✅ | `?limit=` / `?cursor=` page the `case_events` timeline. AI summary, handoff reason and sources land with their slices |
+| `GET /v1/cases/{id}` | ✅ | `?limit=` / `?cursor=` page the `case_events` timeline; `?message_limit=` / `?messages_cursor=` page the conversation's **message history** (independent cursor — different table). AI summary, handoff reason and sources land with their slices |
 | `POST /v1/cases/{id}/notes` | ✅ | writes a `case_event` with `visibility: internal` — never a `messages` row, so it can never reach a customer |
+| `POST /v1/cases/{id}/reply` | ✅ (P3b) | outbound `messages` row; `Idempotency-Key` honoured (retry returns the ORIGINAL message; a key already bound to another conversation → `409 conflict`); reply refused on resolved/closed cases (reopen first) and cases without a conversation; `delivery_state` starts `pending` — the channels adapter owns `pending → sent → delivered` (none exists yet, so nothing is marked sent prematurely). The case row is locked `FOR UPDATE` — the human half of the AI vs human send-lock; the AI side lands with ai-orchestration |
+| `POST /v1/cases/{id}/handoff` | ✅ (P3b) | inserts a `handoff` in state `requested` + `handoff.requested` case_event/outbox/audit. One ACTIVE handoff per case (a repeat returns the same row, `created: false`); destination eligibility: queue must be in-tenant (foreign/unknown → 404) and channel-matched when both channels are known (→ 409); the optional summary is preserved in the case_event metadata and never audited. The ACCEPT endpoint lands with the routing slice |
 | `POST /v1/cases/{id}/resolve` / `reopen` | ✅ | a repeat call returns `changed: false` rather than a duplicate transition |
-| `POST /v1/cases/{id}/reply` | ⏳ P3b | needs channel delivery state + the AI send-lock |
-| `POST /v1/cases/{id}/handoff` | ⏳ P3b | needs destination eligibility + the `handoff.requested` producer |
 
 **Authz** is declared per endpoint, default-deny (SECURITY.md §auth): reads require
 `cases.view`, writes require `cases.reply` (owner/admin/agent — viewer is read-only);
 `cases.manage` stays reserved for assignment/queue changes. Enforcement is the permission-key
 check in `RolesGuard`, resolved from `role_permissions` on every request.
+A handoff that ever starts mutating assignment/queues moves to `cases.manage`; requesting
+an escalation stays `cases.reply`.
 
-**Not yet accepted:** `Idempotency-Key`. Its storage lands with `messages.idempotency_key` in
-P3b; until then resolve/reopen are idempotent *by behaviour* (no-op, `changed: false`) rather
-than by key. List ordering is `updated_at DESC` with `updated_at` written explicitly by the
-service — migration 003 has no update trigger, so any other writer must bump it too.
+**`Idempotency-Key`** is accepted on `reply` (the create/send class) — historically the
+storage was pre-built: migration 003 already carried `messages.idempotency_key` with its
+`(tenant_id, idempotency_key)` unique index, so P3b shipped with **no new migration**.
+`resolve`/`reopen`/`notes` are idempotent *by behaviour* (no-op, `changed: false`) rather
+than by key — they are transitions, not creations. Error-code vocabulary gained `409 conflict`
+for a valid request the domain refuses as-is (reply on a resolved case, a key reused on
+another thread, a channel-mismatched handoff queue). List ordering is `updated_at DESC` with
+`updated_at` written explicitly by the service — migration 003 has no update trigger, so any
+other writer must bump it too.
 
 ### Webhooks (inbound provider events)
 | Endpoint | Purpose | Key checks |
@@ -81,6 +88,11 @@ service — migration 003 has no update trigger, so any other writer must bump i
 Envelope (all events): `{ event_id, tenant_id, type, schema_version, occurred_at, correlation_id, payload_ref | payload }`. Prefer references over copying sensitive content.
 
 Initial catalog (Architecture v1 §9): `message.received`, `conversation.created`, `case.created`, `case.assigned`, `ai.decision.completed`, `ai.response.sent`, `handoff.requested`, `handoff.accepted`, `case.resolved`, `case.reopened`, `email.delivery.failed`, `voice.call.started|ended`, `knowledge.indexing.completed`, `knowledge.version.published`, `tenant.config.published`, `provider.connection.degraded`, `action.executed`.
+
+**Shipped so far** (producer side): `case.resolved`, `case.reopened` (P3 increment 1);
+`message.sent` (additive catalog entry — agent replies need a producer for the widget live
+stream; Architecture §9's list does not name it, consumers must tolerate additive events per
+the compatibility rule), `handoff.requested` (P3b).
 
 Compatibility: consumers must tolerate additive fields; producers bump `schema_version` on breaking changes; contract tests cover producer + consumer sides.
 

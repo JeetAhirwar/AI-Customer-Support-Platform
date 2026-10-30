@@ -9,6 +9,7 @@ import { resetConfigCache } from '../config/env';
 import { withTenant } from '../db/tenant-scope';
 import { hashPassword } from '../auth/password';
 import { TenancyService } from '../tenancy/tenancy.service';
+import { MAX_REPLY_LENGTH } from './cases.controller';
 
 /**
  * P3 increment 1 — cases read + lifecycle, over the REAL app on injected HTTP
@@ -33,6 +34,10 @@ const d = describe.skipIf(!testDbUrl);
 
 const PASSWORD = 'CasesApi!Pass123';
 const NOTE_BODY = 'Top secret internal note 9f3a';
+const REPLY_BODY = 'Agent widget reply — we shipped the fix 77c1';
+const REPLY_KEY = 'idem-key-reply-0001';
+const HANDOFF_REASON = 'needs a human: customer explicitly asked';
+const HANDOFF_SUMMARY = 'Handoff summary: customer escalated politely';
 
 interface InjectResponse {
   statusCode: number;
@@ -74,6 +79,16 @@ interface DetailPayload {
   case: CasePayload;
   timeline: { id: string; event_type: string; metadata: Record<string, unknown> }[];
   next_cursor: string | null;
+  messages: {
+    id: string;
+    direction: string;
+    actor_type: string;
+    body: string | null;
+    delivery_state: string;
+    sent_at: string | null;
+    created_at: string;
+  }[];
+  messages_next_cursor: string | null;
 }
 
 d('P3 cases API (real app, HTTP)', () => {
@@ -88,13 +103,15 @@ d('P3 cases API (real app, HTTP)', () => {
     {} as never;
   let tokenB: string;
 
-  // tenant A fixtures — five cases so pagination has real pages to walk
+  // tenant A fixtures — seven cases so pagination has real pages to walk
   const ids = {
     overdue: randomUUID(),
     resolvedSeed: randomUUID(),
     plain: randomUUID(),
     notes: randomUUID(),
     lifecycle: randomUUID(),
+    reply: randomUUID(), // has its own empty conversation (its reply lands here)
+    handoff: randomUUID(), // shares the main conversation (3 seeded messages)
     foreign: randomUUID(), // tenant B's case, seen through tenant B's eyes
   };
 
@@ -215,6 +232,13 @@ d('P3 cases API (real app, HTTP)', () => {
           ],
         );
 
+      // a second (message-free) conversation so the reply test starts clean
+      const replyConversation = await c.query<{ id: string }>(
+        `INSERT INTO conversations (tenant_id, channel, customer_id, status)
+         VALUES ($1, 'chat', $2, 'open') RETURNING id`,
+        [tenantA, customerId],
+      );
+
       await insertCase(ids.overdue, {
         status: 'open',
         priority: 'high',
@@ -236,6 +260,16 @@ d('P3 cases API (real app, HTTP)', () => {
         priority: 'urgent',
         conversationId,
       });
+      await insertCase(ids.reply, {
+        status: 'open',
+        priority: 'normal',
+        conversationId: replyConversation.rows[0]!.id,
+      });
+      await insertCase(ids.handoff, {
+        status: 'open',
+        priority: 'normal',
+        conversationId,
+      });
 
       // timeline fixture for keyset paging (distinct, explicit occurred_at)
       for (const [index, minutes] of [3, 2, 1].entries()) {
@@ -244,6 +278,24 @@ d('P3 cases API (real app, HTTP)', () => {
              (tenant_id, case_id, event_type, actor_type, metadata, occurred_at)
            VALUES ($1, $2, $3, 'system', '{}'::jsonb, now() - make_interval(mins => $4::int))`,
           [tenantA, ids.plain, `fixture.event.${index}`, minutes],
+        );
+      }
+
+      // customer message fixtures on the shared conversation — message
+      // history paging has real rows to walk (explicit created_at spacing)
+      for (const [index, minutes] of [3, 2, 1].entries()) {
+        await c.query(
+          `INSERT INTO messages
+             (tenant_id, conversation_id, direction, actor_type, body_preview,
+              delivery_state, created_at)
+           VALUES ($1, $2, 'inbound', 'customer', $3, 'delivered',
+                   now() - make_interval(mins => $4::int))`,
+          [
+            tenantA,
+            conversationId,
+            `fixture customer message ${index}`,
+            minutes,
+          ],
         );
       }
     });
@@ -263,17 +315,22 @@ d('P3 cases API (real app, HTTP)', () => {
   };
 
   /**
-   * Which lifecycle events reached the outbox. Ordered by created_at: the id
-   * is gen_random_uuid() — random, not monotonic — so ordering by it would
-   * shuffle events written in different transactions.
+   * Which events of a given set reached the outbox. Ordered by created_at:
+   * the id is gen_random_uuid() — random, not monotonic — so ordering by it
+   * would shuffle events written in different transactions. The caller
+   * scopes the queried types so existing assertions stay exact unless they
+   * opt in to the new producers.
    */
-  const outboxTypes = async (tenantId: string): Promise<string[]> => {
+  const outboxTypes = async (
+    tenantId: string,
+    types: string[] = ['case.resolved', 'case.reopened'],
+  ): Promise<string[]> => {
     const res = await withTenant(tenantId, (c) =>
       c.query<{ type: string }>(
         `SELECT type FROM outbox_events
-          WHERE tenant_id = $1 AND type IN ('case.resolved', 'case.reopened')
+          WHERE tenant_id = $1 AND type = ANY($2::text[])
           ORDER BY created_at`,
-        [tenantId],
+        [tenantId, types],
       ),
     );
     return res.rows.map((row) => row.type);
@@ -380,7 +437,7 @@ d('P3 cases API (real app, HTTP)', () => {
     const res = await inject({ url: '/v1/cases', headers: auth(tokens.viewer) });
     expect(res.statusCode).toBe(200);
     const body = res.json<ListPayload>();
-    expect(body.cases).toHaveLength(5);
+    expect(body.cases).toHaveLength(7);
     expect(body.next_cursor).toBeNull();
     expect(body.cases.some((c) => c.id === ids.foreign)).toBe(false);
     expect(body.cases.some((c) => 'tenant_id' in (c as object))).toBe(false);
@@ -411,10 +468,18 @@ d('P3 cases API (real app, HTTP)', () => {
       pages += 1;
     } while (cursor && pages < 10);
 
-    expect(pages).toBe(3); // 5 cases at limit 2 = 2 + 2 + 1
+    expect(pages).toBe(4); // 7 cases at limit 2 = 2 + 2 + 2 + 1
     expect(new Set(seen).size).toBe(seen.length);
     expect(seen.sort()).toEqual(
-      [ids.overdue, ids.resolvedSeed, ids.plain, ids.notes, ids.lifecycle].sort(),
+      [
+        ids.overdue,
+        ids.resolvedSeed,
+        ids.plain,
+        ids.notes,
+        ids.lifecycle,
+        ids.reply,
+        ids.handoff,
+      ].sort(),
     );
   });
 
@@ -674,6 +739,399 @@ d('P3 cases API (real app, HTTP)', () => {
       ['case.resolved', 'case.reopened'].sort(),
     );
     expect(await auditRows(tenantA, 'case.reopened')).toHaveLength(1);
+  });
+
+  it('viewer reads message history but cannot reply (Gate A)', async () => {
+    const denied = await inject({
+      method: 'POST',
+      url: `/v1/cases/${ids.reply}/reply`,
+      headers: auth(tokens.viewer),
+      payload: { body: 'viewer should never reach a customer' },
+    });
+    expect(denied.statusCode).toBe(403);
+    expect(denied.json<Envelope>().error.code).toBe('permission_denied');
+    expect(denied.json<Envelope>().error.message).toContain('cases.reply');
+
+    // read is viewer-legitimate: their case's (empty) history + timeline
+    const detail = await inject({
+      url: `/v1/cases/${ids.reply}`,
+      headers: auth(tokens.viewer),
+    });
+    expect(detail.statusCode).toBe(200);
+    expect(detail.json<DetailPayload>().messages).toEqual([]);
+  });
+
+  it('agent replies: message row + bump + audit + outbox in one transaction (Gate B)', async () => {
+    const before = await inject({
+      url: `/v1/cases/${ids.reply}`,
+      headers: auth(tokens.agent),
+    });
+    const updatedBefore = before.json<DetailPayload>().case.updated_at;
+
+    const res = await inject({
+      method: 'POST',
+      url: `/v1/cases/${ids.reply}/reply`,
+      headers: { ...auth(tokens.agent), 'idempotency-key': REPLY_KEY },
+      payload: { body: REPLY_BODY },
+    });
+    expect(res.statusCode).toBe(201);
+    const sent = res.json<{ message: DetailPayload['messages'][number]; idempotent_replayed: boolean }>();
+    expect(sent.idempotent_replayed).toBe(false);
+    expect(sent.message.direction).toBe('outbound');
+    expect(sent.message.actor_type).toBe('agent');
+    expect(sent.message.body).toBe(REPLY_BODY);
+    expect(sent.message.delivery_state).toBe('pending'); // honest: no adapter yet
+    expect(sent.message.sent_at).toBeNull();
+
+    // the detail response carries the new history, and last-activity moved
+    const detail = await inject({
+      url: `/v1/cases/${ids.reply}`,
+      headers: auth(tokens.agent),
+    });
+    const body = detail.json<DetailPayload>();
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]!.id).toBe(sent.message.id);
+    expect(body.messages_next_cursor).toBeNull();
+    expect(new Date(body.case.updated_at).getTime()).toBeGreaterThanOrEqual(
+      new Date(updatedBefore).getTime(),
+    );
+
+    // SECURITY §8: audit records THAT a reply was sent, never what it said
+    const audit = await auditRows(tenantA, 'message.sent');
+    expect(audit).toHaveLength(1);
+    expect(JSON.stringify(audit.map((row) => row.metadata))).not.toContain(
+      REPLY_BODY,
+    );
+    expect(await outboxTypes(tenantA, ['message.sent'])).toEqual([
+      'message.sent',
+    ]);
+  });
+
+  it('Idempotency-Key: the retry returns the ORIGINAL message, nothing duplicated (Gate B)', async () => {
+    const res = await inject({
+      method: 'POST',
+      url: `/v1/cases/${ids.reply}/reply`,
+      headers: { ...auth(tokens.agent), 'idempotency-key': REPLY_KEY },
+      payload: { body: 'a DIFFERENT draft must never become a second message' },
+    });
+    expect(res.statusCode).toBe(201);
+    const replayed = res.json<{
+      message: DetailPayload['messages'][number];
+      idempotent_replayed: boolean;
+    }>();
+    expect(replayed.idempotent_replayed).toBe(true);
+    expect(replayed.message.body).toBe(REPLY_BODY); // original wins, not the retry
+
+    // exactly one message on the reply conversation, one audit, one event
+    const detail = await inject({
+      url: `/v1/cases/${ids.reply}`,
+      headers: auth(tokens.agent),
+    });
+    expect(detail.json<DetailPayload>().messages).toHaveLength(1);
+    expect(await outboxTypes(tenantA, ['message.sent'])).toEqual([
+      'message.sent',
+    ]);
+    expect(await auditRows(tenantA, 'message.sent')).toHaveLength(1);
+  });
+
+  it('a key already bound to another conversation is a conflict, not a silent reroute (Gate B)', async () => {
+    const res = await inject({
+      method: 'POST',
+      url: `/v1/cases/${ids.handoff}/reply`, // same tenant, different conversation
+      headers: { ...auth(tokens.agent), 'idempotency-key': REPLY_KEY },
+      payload: { body: 'would land on the wrong thread' },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json<Envelope>().error.code).toBe('conflict');
+
+    // the other conversation stayed intact
+    const detail = await inject({
+      url: `/v1/cases/${ids.handoff}`,
+      headers: auth(tokens.agent),
+    });
+    expect(detail.json<DetailPayload>().messages).toHaveLength(3);
+  });
+
+  it('reply refuses a resolved case and a conversation-less case (409)', async () => {
+    const resolved = await inject({
+      method: 'POST',
+      url: `/v1/cases/${ids.resolvedSeed}/reply`,
+      headers: auth(tokens.agent),
+      payload: { body: 'case is over' },
+    });
+    expect(resolved.statusCode).toBe(409);
+    expect(resolved.json<Envelope>().error.code).toBe('conflict');
+    expect(resolved.json<Envelope>().error.message).toContain('reopen');
+
+    const bare = await inject({
+      method: 'POST',
+      url: `/v1/cases/${ids.plain}/reply`, // open, but has no conversation
+      headers: auth(tokens.agent),
+      payload: { body: 'no thread to reply on' },
+    });
+    expect(bare.statusCode).toBe(409);
+    expect(bare.json<Envelope>().error.code).toBe('conflict');
+    expect(bare.json<Envelope>().error.message).toContain('conversation');
+  });
+
+  it('rejects malformed reply payloads and Idempotency-Keys (400)', async () => {
+    for (const { payload, key } of [
+      { payload: {}, key: undefined },
+      { payload: { body: '' }, key: undefined },
+      { payload: { body: 7 }, key: undefined },
+      { payload: { body: 'x', extra: 1 }, key: undefined },
+      { payload: ['body'], key: undefined },
+      {
+        payload: { body: 'x'.repeat(MAX_REPLY_LENGTH + 1) },
+        key: undefined,
+      },
+      { payload: { body: 'ok' }, key: 'line\nbreak' },
+      { payload: { body: 'ok' }, key: 'k'.repeat(129) },
+    ] as { payload: unknown; key: string | undefined }[]) {
+      const res = await inject({
+        method: 'POST',
+        url: `/v1/cases/${ids.reply}/reply`,
+        headers: {
+          ...auth(tokens.agent),
+          ...(key !== undefined ? { 'idempotency-key': key } : {}),
+        },
+        payload,
+      });
+      expect(res.statusCode, JSON.stringify(payload)).toBe(400);
+      expect(res.json<Envelope>().error.code).toBe('validation_failed');
+    }
+  });
+
+  it('cross-tenant reply is 404 and writes nothing (Gate A)', async () => {
+    const res = await inject({
+      method: 'POST',
+      url: `/v1/cases/${ids.reply}/reply`, // tenant B admin, real permission in ITS tenant
+      headers: { ...auth(tokenB), 'idempotency-key': 'b-key-1' },
+      payload: { body: 'foreign write' },
+    });
+    expect(res.statusCode).toBe(404);
+    expect(res.json<Envelope>().error.code).toBe('not_found');
+
+    // tenant B's scoping is key-per-tenant anyway, but nothing was written
+    // to tenant A's conversation: still exactly the one agent message
+    const detail = await inject({
+      url: `/v1/cases/${ids.reply}`,
+      headers: auth(tokens.agent),
+    });
+    expect(detail.json<DetailPayload>().messages).toHaveLength(1);
+  });
+
+  it('message history pages by keyset (?message_limit/?messages_cursor, Gate B)', async () => {
+    const first = await inject({
+      url: `/v1/cases/${ids.handoff}?message_limit=2`,
+      headers: auth(tokens.agent),
+    });
+    expect(first.statusCode).toBe(200);
+    const firstBody = first.json<DetailPayload>();
+    expect(firstBody.messages).toHaveLength(2); // 3 seeded customer messages
+    expect(firstBody.messages_next_cursor).not.toBeNull();
+    expect(firstBody.messages[0]!.body).toBe('fixture customer message 2'); // newest first
+
+    const second = await inject({
+      url:
+        `/v1/cases/${ids.handoff}?message_limit=2&messages_cursor=` +
+        encodeURIComponent(firstBody.messages_next_cursor!),
+      headers: auth(tokens.agent),
+    });
+    expect(second.statusCode).toBe(200);
+    const secondBody = second.json<DetailPayload>();
+    expect(secondBody.messages).toHaveLength(1);
+    expect(secondBody.messages_next_cursor).toBeNull();
+    expect(secondBody.messages[0]!.body).toBe('fixture customer message 0');
+
+    const seen = [firstBody.messages[0]!.id, firstBody.messages[1]!.id, secondBody.messages[0]!.id];
+    expect(new Set(seen).size).toBe(3);
+
+    for (const url of [
+      `/v1/cases/${ids.handoff}?message_limit=0`,
+      `/v1/cases/${ids.handoff}?message_limit=201`,
+      `/v1/cases/${ids.handoff}?messages_cursor=garbage`,
+    ]) {
+      const bad = await inject({ url, headers: auth(tokens.agent) });
+      expect(bad.statusCode, url).toBe(400);
+      expect(bad.json<Envelope>().error.code).toBe('validation_failed');
+    }
+  });
+
+  it('agent requests a handoff: row + timeline + outbox + audit together (Gate B)', async () => {
+    // a destination queue created fresh — this suite owns its fixtures
+    const queue = await withTenant(tenantA, (c) =>
+      c.query<{ id: string }>(
+        `INSERT INTO queues (tenant_id, name) VALUES ($1, $2) RETURNING id`,
+        [tenantA, `Escalation ${Date.now()}`],
+      ),
+    );
+    const queueId = queue.rows[0]!.id;
+
+    const res = await inject({
+      method: 'POST',
+      url: `/v1/cases/${ids.notes}/handoff`,
+      headers: auth(tokens.agent),
+      payload: {
+        reason: HANDOFF_REASON,
+        summary: HANDOFF_SUMMARY,
+        destination_queue_id: queueId,
+      },
+    });
+    expect(res.statusCode).toBe(201);
+    const created = res.json<{
+      handoff: {
+        id: string;
+        case_id: string;
+        reason: string;
+        destination_queue_id: string | null;
+        state: string;
+        requested_at: string;
+      };
+      created: boolean;
+    }>();
+    expect(created.created).toBe(true);
+    expect(created.handoff.case_id).toBe(ids.notes);
+    expect(created.handoff.state).toBe('requested');
+    expect(created.handoff.destination_queue_id).toBe(queueId);
+    expect(created.handoff.requested_at).not.toBeNull();
+
+    // the timeline preserves the summary next to the reason
+    const detail = await inject({
+      url: `/v1/cases/${ids.notes}`,
+      headers: auth(tokens.agent),
+    });
+    const requested = detail
+      .json<DetailPayload>()
+      .timeline.find((e) => e.event_type === 'handoff.requested');
+    expect(requested).toBeDefined();
+    expect(requested!.metadata).toMatchObject({
+      reason: HANDOFF_REASON,
+      destination_queue_id: queueId,
+      summary: HANDOFF_SUMMARY,
+      handoff_id: created.handoff.id,
+    });
+
+    expect(await outboxTypes(tenantA, ['handoff.requested'])).toEqual([
+      'handoff.requested',
+    ]);
+    const audit = await auditRows(tenantA, 'case.handoff.requested');
+    expect(audit).toHaveLength(1);
+    expect(audit[0]!.metadata).toMatchObject({
+      reason: HANDOFF_REASON,
+      destination_queue_id: queueId,
+    });
+    // the audit carries the reason (short, factual), never the body content
+    expect(JSON.stringify(audit.map((row) => row.metadata))).not.toContain(
+      HANDOFF_SUMMARY,
+    );
+  });
+
+  it('a second handoff while one is active returns the same row — created:false (Gate B)', async () => {
+    const again = await inject({
+      method: 'POST',
+      url: `/v1/cases/${ids.notes}/handoff`,
+      headers: auth(tokens.agent),
+      payload: { reason: 'duplicate request while one is pending' },
+    });
+    expect(again.statusCode).toBe(201);
+    const body = again.json<{ handoff: { id: string }; created: boolean }>();
+    expect(body.created).toBe(false);
+    expect(await outboxTypes(tenantA, ['handoff.requested'])).toEqual([
+      'handoff.requested',
+    ]);
+
+    // once that handoff leaves `requested` (here: simulating a decline the
+    // routing slice will drive), a new request legitimately creates a NEW one
+    await withTenant(tenantA, (c) =>
+      c.query(
+        `UPDATE handoffs SET state = 'declined' WHERE case_id = $1`,
+        [ids.notes],
+      ),
+    );
+    const after = await inject({
+      method: 'POST',
+      url: `/v1/cases/${ids.notes}/handoff`,
+      headers: auth(tokens.agent),
+      payload: { reason: 'fresh escalation after the decline' },
+    });
+    expect(after.statusCode).toBe(201);
+    const afterBody = after.json<{ handoff: { id: string }; created: boolean }>();
+    expect(afterBody.created).toBe(true);
+    expect(afterBody.handoff.id).not.toBe(body.handoff.id);
+    expect(
+      (await outboxTypes(tenantA, ['handoff.requested'])).length,
+    ).toBe(2);
+  });
+
+  it('handoff destination eligibility: unknown/foreign queue 404, channel mismatch 409 (Gate B)', async () => {
+    const unknown = await inject({
+      method: 'POST',
+      url: `/v1/cases/${ids.notes}/handoff`,
+      headers: auth(tokens.agent),
+      payload: { reason: 'r', destination_queue_id: randomUUID() },
+    });
+    expect(unknown.statusCode).toBe(404);
+    expect(unknown.json<Envelope>().error.code).toBe('not_found');
+    expect(unknown.json<Envelope>().error.message).toContain('queue');
+
+    // a queue in tenant B is invisible to tenant A — same 404, same envelope
+    const foreignQueue = await withTenant(tenantB, (c) =>
+      c.query<{ id: string }>(
+        `INSERT INTO queues (tenant_id, name) VALUES ($1, $2) RETURNING id`,
+        [tenantB, `Foreign ${Date.now()}`],
+      ),
+    );
+    const foreign = await inject({
+      method: 'POST',
+      url: `/v1/cases/${ids.notes}/handoff`,
+      headers: auth(tokens.agent),
+      payload: {
+        reason: 'r',
+        destination_queue_id: foreignQueue.rows[0]!.id,
+      },
+    });
+    expect(foreign.statusCode).toBe(404);
+
+    // email-bound queue vs a chat case (ids.reply has a chat conversation)
+    const emailQueue = await withTenant(tenantA, (c) =>
+      c.query<{ id: string }>(
+        `INSERT INTO queues (tenant_id, name, channel) VALUES ($1, $2, 'email') RETURNING id`,
+        [tenantA, `Email only ${Date.now()}`],
+      ),
+    );
+    const mismatch = await inject({
+      method: 'POST',
+      url: `/v1/cases/${ids.reply}/handoff`,
+      headers: auth(tokens.agent),
+      payload: {
+        reason: 'r',
+        destination_queue_id: emailQueue.rows[0]!.id,
+      },
+    });
+    expect(mismatch.statusCode).toBe(409);
+    expect(mismatch.json<Envelope>().error.code).toBe('conflict');
+  });
+
+  it('handoff refuses a resolved case; cross-tenant is 404, never a mutation (Gate A)', async () => {
+    const resolved = await inject({
+      method: 'POST',
+      url: `/v1/cases/${ids.resolvedSeed}/handoff`,
+      headers: auth(tokens.agent),
+      payload: { reason: 'cannot escalate a closed case' },
+    });
+    expect(resolved.statusCode).toBe(409);
+    expect(resolved.json<Envelope>().error.code).toBe('conflict');
+    expect(resolved.json<Envelope>().error.message).toContain('reopen');
+
+    const foreign = await inject({
+      method: 'POST',
+      url: `/v1/cases/${ids.reply}/handoff`, // tenant B admin
+      headers: auth(tokenB),
+      payload: { reason: 'cross-tenant probe' },
+    });
+    expect(foreign.statusCode).toBe(404);
+    expect(foreign.json<Envelope>().error.code).toBe('not_found');
   });
 
   it('lifecycle transitions across tenants are 404, never a mutation (Gate A)', async () => {

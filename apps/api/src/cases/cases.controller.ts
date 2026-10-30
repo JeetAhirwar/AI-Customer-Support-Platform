@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   HttpCode,
   Param,
   Post,
@@ -20,10 +21,13 @@ import {
   CasesService,
   type CaseRow,
   type CaseTimelineRow,
+  type HandoffRow,
+  type MessageRow,
 } from './cases.service';
 
 /**
- * Cases API (API_CONTRACTS §2, P3 increment 1: read + lifecycle).
+ * Cases API (API_CONTRACTS §2; P3 increment 1: read + lifecycle — P3b:
+ * reply + handoff + Idempotency-Key + message history).
  *
  * Authz is declared PER ENDPOINT (SECURITY.md §auth: "permission checks
  * default-deny; new endpoints require an explicit authz decision in code
@@ -31,16 +35,23 @@ import {
  * call, so revocation and role edits apply to the next request:
  *
  *   GET  /v1/cases              cases.view   (owner/admin/agent/viewer)
- *   GET  /v1/cases/{id}         cases.view   (timeline = ?cursor= on case_events)
+ *   GET  /v1/cases/{id}         cases.view   (timeline = ?cursor= on case_events;
+ *                                            messages = ?messages_cursor=/?message_limit=)
  *   POST /v1/cases/{id}/notes   cases.reply  (owner/admin/agent — viewer 403)
+ *   POST /v1/cases/{id}/reply   cases.reply  (Idempotency-Key honoured; 409 on a
+ *                                            resolved case / reused key)
+ *   POST /v1/cases/{id}/handoff cases.reply  (agent escalation; one active
+ *                                            handoff per case; queue eligibility)
  *   POST /v1/cases/{id}/resolve cases.reply  (idempotent: changed=false if already)
  *   POST /v1/cases/{id}/reopen  cases.reply  (only from resolved/closed)
  *
  * `cases.manage` stays reserved for assignment/queue changes (founder
- * decision 2026-10-25: agents resolve their own cases).
+ * decision 2026-10-25: agents resolve their own cases; handoff = requesting
+ * escalation, not reassignment — if a handoff ever starts mutating
+ * assignment/queues it moves to `cases.manage`).
  *
- * Not yet implemented, per contract: /reply and /handoff (channel delivery
- * state + AI send-lock) and `Idempotency-Key` (storage lands with P3b).
+ * The handoff ACCEPT endpoint (`handoff.accepted`) lands with the routing
+ * slice; `case.created` waits for a case-creation endpoint.
  */
 
 interface RequestWithClaims extends FastifyRequest {
@@ -58,6 +69,14 @@ export const MAX_LIMIT = 100;
 export const DEFAULT_TIMELINE_LIMIT = 100;
 export const MAX_TIMELINE_LIMIT = 200;
 export const MAX_NOTE_LENGTH = 5000;
+/** chat-sized body stored whole in `body_preview` (see cases.service) */
+export const MAX_REPLY_LENGTH = 10_000;
+export const MAX_HANDOFF_REASON = 512;
+export const MAX_HANDOFF_SUMMARY = 5000;
+export const DEFAULT_MESSAGE_LIMIT = 50;
+export const MAX_MESSAGE_LIMIT = 200;
+/** no control characters (a newline inside a key cannot appear in a header) */
+const IDEMPOTENCY_KEY_RE = /^[\x20-\x7E]{1,128}$/;
 
 function invalid(message: string, details?: unknown): AppException {
   return new AppException('validation_failed', message, details);
@@ -214,6 +233,80 @@ export function parseResolveBody(body: unknown): {
   return { resolution_code: code };
 }
 
+export function parseReplyBody(body: unknown): { body: string } {
+  const record = parseObjectBody(body, ['body']);
+  const value = record.body;
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw invalid('body must be a non-empty string');
+  }
+  if (value.length > MAX_REPLY_LENGTH) {
+    throw invalid(`body must be at most ${MAX_REPLY_LENGTH} characters`);
+  }
+  return { body: value };
+}
+
+/**
+ * Optional `Idempotency-Key` header (API_CONTRACTS §1) — printable ASCII
+ * only, ≤ 128 chars: it is echoed nowhere and stored verbatim, but a key
+ * built of control characters cannot even arrive as a proper HTTP header.
+ */
+export function parseIdempotencyKey(raw: unknown): string | undefined {
+  const value = asString(raw);
+  if (value === undefined || value === '') return undefined;
+  if (!IDEMPOTENCY_KEY_RE.test(value)) {
+    throw invalid(
+      'Idempotency-Key must be 1-128 printable ASCII characters',
+    );
+  }
+  return value;
+}
+
+export function parseHandoffBody(body: unknown): {
+  reason: string;
+  destination_queue_id?: string;
+  summary?: string;
+} {
+  const record = parseObjectBody(body, [
+    'reason',
+    'destination_queue_id',
+    'summary',
+  ]);
+  const reason = record.reason;
+  if (
+    typeof reason !== 'string' ||
+    reason.trim().length === 0 ||
+    reason.length > MAX_HANDOFF_REASON
+  ) {
+    throw invalid(
+      `reason must be a non-empty string of at most ${MAX_HANDOFF_REASON} characters`,
+    );
+  }
+  const result: {
+    reason: string;
+    destination_queue_id?: string;
+    summary?: string;
+  } = { reason };
+  if (record.destination_queue_id !== undefined) {
+    result.destination_queue_id = parseUuid(
+      record.destination_queue_id,
+      'destination_queue_id',
+    );
+  }
+  const summary = record.summary;
+  if (summary !== undefined) {
+    if (typeof summary !== 'string' || summary.trim().length === 0) {
+      throw invalid('summary must be a non-empty string');
+    }
+    if (summary.length > MAX_HANDOFF_SUMMARY) {
+      throw invalid(
+        `summary must be at most ${MAX_HANDOFF_SUMMARY} characters`,
+      );
+    }
+    result.summary = summary;
+  }
+  return result;
+}
+
 /** The tenant is ALWAYS the verified JWT `tid` claim — never a parameter. */
 function tenantOf(req: RequestWithClaims): string {
   const tid = req.user?.tid;
@@ -277,6 +370,30 @@ export function toApiTimelineEvent(
   };
 }
 
+export function toApiMessage(row: MessageRow): Record<string, unknown> {
+  return {
+    id: row.id,
+    conversation_id: row.conversation_id,
+    direction: row.direction,
+    actor_type: row.actor_type,
+    body: row.body_preview,
+    delivery_state: row.delivery_state,
+    sent_at: iso(row.sent_at),
+    created_at: iso(row.created_at),
+  };
+}
+
+export function toApiHandoff(row: HandoffRow): Record<string, unknown> {
+  return {
+    id: row.id,
+    case_id: row.case_id,
+    reason: row.reason,
+    destination_queue_id: row.destination_queue_id,
+    state: row.state,
+    requested_at: iso(row.requested_at),
+  };
+}
+
 @UseGuards(RolesGuard)
 @Controller('v1/cases')
 export class CasesController {
@@ -308,7 +425,8 @@ export class CasesController {
     return { cases: page.cases.map(toApiCase), next_cursor: page.nextCursor };
   }
 
-  /** ?limit=/?cursor= page the timeline; the case object is always complete. */
+  /** ?limit=/?cursor= page the timeline; ?message_limit=/?messages_cursor=
+   *  page the conversation's message history; the case object is always complete. */
   @Get(':id')
   @RequirePermissions('cases.view')
   async detail(
@@ -319,6 +437,8 @@ export class CasesController {
     case: Record<string, unknown>;
     timeline: Record<string, unknown>[];
     next_cursor: string | null;
+    messages: Record<string, unknown>[];
+    messages_next_cursor: string | null;
   }> {
     // same wire format as the list cursor (`timestamp|id`), different column
     const page = await this.cases.detail(
@@ -326,11 +446,15 @@ export class CasesController {
       parseUuid(id, 'id'),
       parseLimit(query.limit, DEFAULT_TIMELINE_LIMIT, MAX_TIMELINE_LIMIT),
       parseCaseCursor(query.cursor),
+      parseLimit(query.message_limit, DEFAULT_MESSAGE_LIMIT, MAX_MESSAGE_LIMIT),
+      parseCaseCursor(query.messages_cursor),
     );
     return {
       case: toApiCase(page.case),
       timeline: page.timeline.map(toApiTimelineEvent),
       next_cursor: page.nextCursor,
+      messages: page.messages.map(toApiMessage),
+      messages_next_cursor: page.messagesNextCursor,
     };
   }
 
@@ -349,6 +473,58 @@ export class CasesController {
       note.body,
     );
     return { note: toApiTimelineEvent(event) };
+  }
+
+  /** 201 always; on a replayed Idempotency-Key the ORIGINAL message comes
+   *  back with `idempotent_replayed: true` (API_CONTRACTS §1). */
+  @Post(':id/reply')
+  @HttpCode(201)
+  @RequirePermissions('cases.reply')
+  async reply(
+    @Param('id') id: string,
+    @Body() body: unknown,
+    @Headers('idempotency-key') idempotencyKey: unknown,
+    @Req() req: RequestWithClaims,
+  ): Promise<{
+    message: Record<string, unknown>;
+    idempotent_replayed: boolean;
+  }> {
+    const input = parseReplyBody(body);
+    const result = await this.cases.reply(tenantOf(req), parseUuid(id, 'id'), actorOf(req), {
+      body: input.body,
+      idempotencyKey: parseIdempotencyKey(idempotencyKey),
+    });
+    return {
+      message: toApiMessage(result.message),
+      idempotent_replayed: result.idempotentReplayed,
+    };
+  }
+
+  /** 201 when a handoff was requested; an already-active one returns it
+   *  with `created: false` (idempotent by behaviour, like resolve). */
+  @Post(':id/handoff')
+  @HttpCode(201)
+  @RequirePermissions('cases.reply')
+  async handoff(
+    @Param('id') id: string,
+    @Body() body: unknown,
+    @Req() req: RequestWithClaims,
+  ): Promise<{
+    handoff: Record<string, unknown>;
+    created: boolean;
+  }> {
+    const input = parseHandoffBody(body);
+    const result = await this.cases.requestHandoff(
+      tenantOf(req),
+      parseUuid(id, 'id'),
+      actorOf(req),
+      {
+        reason: input.reason,
+        summary: input.summary,
+        destinationQueueId: input.destination_queue_id,
+      },
+    );
+    return { handoff: toApiHandoff(result.handoff), created: result.created };
   }
 
   @Post(':id/resolve')

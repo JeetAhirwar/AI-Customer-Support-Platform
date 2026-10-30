@@ -12,6 +12,9 @@ export type ErrorCode =
   | 'permission_denied'
   | 'tenant_mismatch'
   | 'not_found'
+  /** 409 — a valid request the domain refuses as-is: reply on a resolved
+   *  case, a reused Idempotency-Key, a channel-mismatched handoff queue */
+  | 'conflict'
   | 'rate_limited'
   | 'provider_unavailable'
   | 'internal_error';
@@ -22,6 +25,7 @@ const CODE_STATUS: Record<ErrorCode, number> = {
   permission_denied: 403,
   tenant_mismatch: 403,
   not_found: 404,
+  conflict: 409,
   rate_limited: 429,
   provider_unavailable: 503,
   internal_error: 500,

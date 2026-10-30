@@ -5,8 +5,12 @@ import { AuditService } from '../audit/audit.service';
 import { OutboxService } from '../outbox/outbox.service';
 
 /**
- * Cases service — the first business slice (P3 increment 1: read + lifecycle),
- * over the RLS-protected `cases` / `case_events` tables from migration 003.
+ * Cases service — the first business slice (P3 increment 1: read + lifecycle;
+ * P3b: reply + handoff + Idempotency-Key + message history), over the
+ * RLS-protected `cases` / `case_events` / `messages` / `handoffs` tables from
+ * migration 003 (no new migration needed — 003 already carried
+ * `messages.idempotency_key` with its `(tenant_id, idempotency_key)` unique
+ * index and the whole `handoffs` table).
  *
  * Rules honoured here:
  *  - every statement runs inside withTenant() (ADR-003) — tenant predicates
@@ -18,11 +22,15 @@ import { OutboxService } from '../outbox/outbox.service';
  *  - `updated_at` is written EXPLICITLY (migration 003 has no trigger) — the
  *    keyset ordering below depends on it, so every lifecycle write bumps it;
  *  - keyset pagination only, never offset (API_CONTRACTS §1);
- *  - audit metadata carries structured facts only — never a note body.
+ *  - audit metadata carries structured facts only — never a note/reply body.
  *
- * Deliberately NOT in this increment (documented in API_CONTRACTS):
- * reply/handoff (need channel delivery state + the AI send-lock) and
- * Idempotency-Key storage (lands with messages.idempotency_key in P3b).
+ * Deliberately NOT in this increment: the `case.created` producer (no
+ * case-creation endpoint exists yet) and the `AI-handled` list filter (no
+ * column yet). The AI side of the send-lock (SERVICE_BOUNDARIES §4: "AI vs
+ * human send-lock") lands with ai-orchestration — the human side is already
+ * serialized: reply/handoff lock the case row `FOR UPDATE` and refuse
+ * terminal states, so a concurrent AI send can never race a human one once
+ * the AI actor exists.
  * Resolve/reopen are idempotent by behaviour instead: a repeat call is a
  * no-op that returns `changed: false` rather than a duplicate transition.
  */
@@ -81,6 +89,34 @@ export interface CaseTimelineRow {
   occurred_at_text: string;
 }
 
+export interface MessageRow {
+  id: string;
+  conversation_id: string;
+  direction: string;
+  actor_type: string;
+  /**
+   * Migration 003's `body_preview` is currently the ONLY inline content
+   * column (`body_ref` points at object storage, which no channel adapter
+   * writes yet) — chat-sized bodies (validated ≤ 10 000 chars) are stored
+   * whole here. Reviewed when the channels/content slice lands.
+   */
+  body_preview: string | null;
+  delivery_state: string;
+  sent_at: Date | null;
+  created_at: Date;
+  /** microsecond-exact text of created_at, for building the message cursor */
+  created_at_text: string;
+}
+
+export interface HandoffRow {
+  id: string;
+  case_id: string;
+  reason: string;
+  destination_queue_id: string | null;
+  state: string;
+  requested_at: Date;
+}
+
 export interface CaseListQuery {
   limit: number;
   /**
@@ -107,6 +143,10 @@ export interface CaseListPage {
 export interface CaseDetailPage {
   case: CaseRow;
   timeline: CaseTimelineRow[];
+  /** page of the conversation's message history (newest first) */
+  messages: MessageRow[];
+  /** opaque `${created_at text}|${id}` for `?messages_cursor=` ; null = last page */
+  messagesNextCursor: string | null;
   nextCursor: string | null;
 }
 
@@ -114,6 +154,18 @@ export interface CaseTransition {
   case: CaseRow;
   /** false = already in that state; nothing was written */
   changed: boolean;
+}
+
+export interface ReplyResult {
+  message: MessageRow;
+  /** true = an earlier request with the same Idempotency-Key was returned */
+  idempotentReplayed: boolean;
+}
+
+export interface HandoffResult {
+  handoff: HandoffRow;
+  /** false = a handoff is already in `requested` state for this case */
+  created: boolean;
 }
 
 /** cursor text carries full microsecond precision (`...123456Z`) */
@@ -158,6 +210,20 @@ const CASE_SELECT = `SELECT ${CASE_COLUMNS}${CASE_FROM}`;
 const TIMELINE_COLUMNS = `
       e.id, e.event_type, e.actor_type, e.actor_id, e.metadata, e.occurred_at,
       ${TIMESTAMP_TEXT('e.occurred_at')} AS occurred_at_text`;
+
+const messageColumns = (prefix: string): string =>
+  `
+        ${prefix}id, ${prefix}conversation_id, ${prefix}direction,
+        ${prefix}actor_type, ${prefix}body_preview, ${prefix}delivery_state,
+        ${prefix}sent_at, ${prefix}created_at,
+        ${TIMESTAMP_TEXT(`${prefix}created_at`)} AS created_at_text`;
+
+/** `m.`-aliased form for SELECTs; the bare form serves INSERT … RETURNING */
+const MESSAGE_COLUMNS = messageColumns('m.');
+
+/** same shape as the timeline/list cursor: `${timestamp text}|${id}` */
+const encodeMessageCursor = (row: MessageRow): string =>
+  `${row.created_at_text}|${row.id}`;
 
 @Injectable()
 export class CasesService {
@@ -217,8 +283,12 @@ export class CasesService {
 
   /**
    * Case detail + its timeline (case_events, newest first, keyset-paginated
-   * by the same ?cursor= parameter). Message history arrives with the reply
-   * slice — case_events is the case's own timeline (notes, transitions).
+   * by ?cursor=) + the first page of the conversation's message history
+   * (messages, newest first, keyset-paginated by ?messages_cursor= with
+   * ?message_limit= — two independent cursors because they page two
+   * different tables). Case events = the case's own timeline (notes,
+   * transitions); message history = every message of the case's
+   * conversation, all directions/actors (customer + agent + AI).
    * A case id from another tenant is indistinguishable from an unknown one.
    */
   async detail(
@@ -226,6 +296,8 @@ export class CasesService {
     caseId: string,
     timelineLimit: number,
     timelineCursor?: { at: string; id: string },
+    messagesLimit = 50,
+    messagesCursor?: { at: string; id: string },
   ): Promise<CaseDetailPage> {
     return withTenant(tenantId, async (client) => {
       const caseRes = await client.query<CaseRow>(
@@ -255,14 +327,274 @@ export class CasesService {
       const rows = timelineRes.rows;
       const timeline = rows.slice(0, timelineLimit);
       const last = timeline[timeline.length - 1];
+
+      // --- message history: one more query in the same transaction. A case
+      // without a conversation (a bare record) has none by definition.
+      let messages: MessageRow[] = [];
+      let messagesNextCursor: string | null = null;
+      if (row.conversation_id) {
+        const mParams: unknown[] = [tenantId, row.conversation_id];
+        let mClause = '';
+        if (messagesCursor) {
+          mParams.push(messagesCursor.at, messagesCursor.id);
+          mClause = ` AND (m.created_at, m.id) < ($3::timestamptz, $4::uuid)`;
+        }
+        mParams.push(messagesLimit + 1);
+        const msgRes = await client.query<MessageRow>(
+          `SELECT ${MESSAGE_COLUMNS}
+           FROM messages m
+          WHERE m.tenant_id = $1 AND m.conversation_id = $2${mClause}
+          ORDER BY m.created_at DESC, m.id DESC
+          LIMIT $${mParams.length}`,
+          mParams,
+        );
+        messages = msgRes.rows.slice(0, messagesLimit);
+        const lastMsg = messages[messages.length - 1];
+        messagesNextCursor =
+          msgRes.rows.length > messagesLimit && lastMsg
+            ? encodeMessageCursor(lastMsg)
+            : null;
+      }
+
       return {
         case: row,
         timeline,
+        messages,
+        messagesNextCursor,
         nextCursor:
           rows.length > timelineLimit && last
             ? `${last.occurred_at_text}|${last.id}`
             : null,
       };
+    });
+  }
+
+  /**
+   * Agent reply — appends an outbound `messages` row to the case's
+   * conversation (P3b). Semantics:
+   *  - the case must be re-openable (never resolved/closed: the reply would
+   *    reach a customer after the case ended — reopen first instead);
+   *  - the case must have a conversation (a bare record cannot carry a
+   *    channel reply);
+   *  - the case row is locked FOR UPDATE, which serializes concurrent
+   *    human sends — the human half of the AI vs human send-lock;
+   *  - `Idempotency-Key` (API_CONTRACTS §1): with a key, the
+   *    `(tenant_id, idempotency_key)` unique index collapses a retry to the
+   *    ORIGINAL message (`idempotentReplayed: true`, no duplicate row, no
+   *    second audit/outbox event). A key already bound to a different
+   *    conversation of the tenant is a conflict — the retry would otherwise
+   *    "succeed" against the wrong thread;
+   *  - delivery_state starts 'pending' honestly: no channel adapter exists
+   *    yet, so nothing has been delivered — the channels slice owns
+   *    pending → sent → delivered/failed;
+   *  - audit (action message.sent) + outbox (message.sent — additive event
+   *    catalog entry for the widget live stream) + the message row + the
+   *    updated_at bump commit in ONE transaction; audit metadata never
+   *    carries the body.
+   */
+  async reply(
+    tenantId: string,
+    caseId: string,
+    actorId: string,
+    input: { body: string; idempotencyKey?: string },
+  ): Promise<ReplyResult> {
+    return withTenant(tenantId, async (client) => {
+      const current = await this.mustFind(client, tenantId, caseId, true);
+      if (isResolvedStatus(current.status)) {
+        throw new AppException(
+          'conflict',
+          'This case is resolved — reopen it before replying',
+        );
+      }
+      if (!current.conversation_id) {
+        throw new AppException(
+          'conflict',
+          'This case has no conversation to reply on',
+        );
+      }
+
+      const insertRes = await client.query<MessageRow>(
+        `INSERT INTO messages
+           (tenant_id, conversation_id, direction, actor_type, body_preview,
+            idempotency_key, delivery_state)
+         VALUES ($1, $2, 'outbound', 'agent', $3, $4, 'pending')
+         ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
+         RETURNING ${messageColumns('')}`,
+        [tenantId, current.conversation_id, input.body, input.idempotencyKey ?? null],
+      );
+
+      let message = insertRes.rows[0];
+      let replayed = false;
+      if (!message) {
+        // the key already exists for this tenant — the API contract says
+        // duplicates return the ORIGINAL result, or conflict when it would
+        // land on a different thread
+        const existingRes = await client.query<MessageRow>(
+          `SELECT ${MESSAGE_COLUMNS}
+             FROM messages m
+            WHERE m.tenant_id = $1 AND m.idempotency_key = $2`,
+          [tenantId, input.idempotencyKey],
+        );
+        message = existingRes.rows[0]!;
+        if (message.conversation_id !== current.conversation_id) {
+          throw new AppException(
+            'conflict',
+            'Idempotency-Key was already used for a different conversation',
+          );
+        }
+        replayed = true;
+      }
+
+      if (!replayed) {
+        await client.query(`UPDATE cases SET updated_at = now() WHERE id = $1`, [
+          caseId,
+        ]);
+        await this.audit.record(
+          {
+            tenantId,
+            actorType: 'user',
+            actorId,
+            action: 'message.sent',
+            targetType: 'message',
+            targetId: message.id,
+            outcome: 'success',
+            metadata: {
+              case_id: caseId,
+              conversation_id: current.conversation_id,
+              direction: 'outbound',
+              delivery_state: 'pending',
+            },
+          },
+          client,
+        );
+        await this.outbox.append(client, {
+          tenantId,
+          type: 'message.sent',
+          payloadRef: JSON.stringify({
+            case_id: caseId,
+            message_id: message.id,
+            conversation_id: current.conversation_id,
+            channel: current.channel,
+          }),
+        });
+      }
+      return { message, idempotentReplayed: replayed };
+    });
+  }
+
+  /**
+   * Agent handoff request (P3b) — inserts a `handoffs` row in state
+   * `requested`, the `handoff.requested` case_event (which preserves the
+   * optional summary next to the reason, as timeline metadata), the
+   * `handoff.requested` OUTBOX event (API_CONTRACTS §3 catalog — the
+   * routing/notifications consumers key off it) and the audit row.
+   * Semantics:
+   *  - only on non-terminal cases;
+   *  - destination eligibility: the queue must exist in THIS tenant (a
+   *    foreign-tenant queue id is 404, indistinguishable from unknown) and,
+   *    when both channels are known, must match the case's channel;
+   *  - one ACTIVE handoff per case: requesting again while one is in
+   *    `requested` state returns the existing row (`created: false`) rather
+   *    than queuing duplicates — idempotent by behaviour, like resolve;
+   *  - the summary (context for the receiving human) lives in the
+   *    case_event metadata — audit metadata records the reason (short,
+   *    factual) but never the summary/body content.
+   */
+  async requestHandoff(
+    tenantId: string,
+    caseId: string,
+    actorId: string,
+    input: { reason: string; summary?: string; destinationQueueId?: string },
+  ): Promise<HandoffResult> {
+    return withTenant(tenantId, async (client) => {
+      const current = await this.mustFind(client, tenantId, caseId, true);
+      if (isResolvedStatus(current.status)) {
+        throw new AppException(
+          'conflict',
+          'This case is resolved — reopen it before requesting a handoff',
+        );
+      }
+      if (input.destinationQueueId) {
+        const queue = await client.query<{ id: string; channel: string | null }>(
+          `SELECT id, channel FROM queues WHERE id = $1::uuid`,
+          [input.destinationQueueId],
+        );
+        const q = queue.rows[0];
+        if (!q) {
+          throw new AppException('not_found', 'Destination queue not found');
+        }
+        if (q.channel && current.channel && q.channel !== current.channel) {
+          throw new AppException(
+            'conflict',
+            'Destination queue is bound to a different channel',
+          );
+        }
+      }
+
+      const active = await client.query<HandoffRow>(
+        `SELECT id, case_id, reason, destination_queue_id, state, requested_at
+           FROM handoffs
+          WHERE tenant_id = $1 AND case_id = $2 AND state = 'requested'
+          ORDER BY requested_at DESC, id DESC
+          LIMIT 1`,
+        [tenantId, caseId],
+      );
+      if (active.rows[0]) return { handoff: active.rows[0], created: false };
+
+      const insert = await client.query<HandoffRow>(
+        `INSERT INTO handoffs
+           (tenant_id, case_id, reason, destination_queue_id, source_refs,
+            state, requested_at)
+         VALUES ($1, $2, $3, $4::uuid, '[]'::jsonb, 'requested', now())
+         RETURNING id, case_id, reason, destination_queue_id, state,
+                   requested_at`,
+        [tenantId, caseId, input.reason, input.destinationQueueId ?? null],
+      );
+      const handoff = insert.rows[0]!;
+
+      const metadata: Record<string, unknown> = {
+        reason: input.reason,
+        destination_queue_id: handoff.destination_queue_id,
+        handoff_id: handoff.id,
+        state: 'requested',
+      };
+      if (input.summary !== undefined) metadata.summary = input.summary;
+      await this.transitionEvent(client, tenantId, caseId, actorId, {
+        eventType: 'handoff.requested',
+        metadata,
+      });
+      await client.query(`UPDATE cases SET updated_at = now() WHERE id = $1`, [
+        caseId,
+      ]);
+      await this.outbox.append(client, {
+        tenantId,
+        type: 'handoff.requested',
+        payloadRef: JSON.stringify({
+          case_id: caseId,
+          handoff_id: handoff.id,
+          reason: input.reason,
+          destination_queue_id: handoff.destination_queue_id,
+        }),
+      });
+      await this.audit.record(
+        {
+          tenantId,
+          actorType: 'user',
+          actorId,
+          action: 'case.handoff.requested',
+          targetType: 'handoff',
+          targetId: handoff.id,
+          outcome: 'success',
+          metadata: {
+            case_id: caseId,
+            reason: input.reason,
+            destination_queue_id: handoff.destination_queue_id,
+            state: 'requested',
+          },
+        },
+        client,
+      );
+      return { handoff, created: true };
     });
   }
 
